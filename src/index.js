@@ -631,7 +631,7 @@ function createFishingEmbed(stage, payload = {}) {
       text: '수면 아래에서 무언가 낚싯줄을 강하게 잡아당깁니다.',
       art: [
         '      |',
-        '      |   splash',
+        '      |   운지',
         '~~~~~~|~~><>~~~~~~',
         '      J',
         '~~~~~~~~~~~~~~~~~~~',
@@ -657,7 +657,7 @@ function createFishingEmbed(stage, payload = {}) {
         '      |',
         '      |',
         '~~~~~~|~~~~~~~~~~~~',
-        '     /J\\   GOT IT',
+        '     /J\\   예아',
         '~~~~><>~~~~~~~~~~~~',
       ].join('\n'),
     },
@@ -2979,10 +2979,14 @@ async function handleUpdate(interaction) {
     clientId: applicationId,
     guildId: interaction.guildId,
     scope: wantsGlobal ? 'global' : 'guild',
+    clearGuildIds: wantsGlobal ? [interaction.guildId] : [],
   });
 
   const target = result.scope === 'global' ? '전역' : '현재 서버';
-  await reply(interaction, `${target} 명령어 ${result.count}개를 동기화했습니다.`);
+  const clearedText = result.clearedGuildIds?.length
+    ? '\n중복 방지를 위해 현재 서버의 예전 서버 전용 명령어를 비웠습니다.'
+    : '';
+  await reply(interaction, `${target} 명령어 ${result.count}개를 동기화했습니다.${clearedText}`);
 }
 
 client.once(Events.ClientReady, async (readyClient) => {
@@ -2995,6 +2999,9 @@ client.once(Events.ClientReady, async (readyClient) => {
         guildId: config.guildId,
       });
       const guildId = scope === 'guild' ? config.guildId : undefined;
+      const clearGuildIds = scope === 'global'
+        ? readyClient.guilds.cache.map((guild) => guild.id)
+        : [];
       if (scope === 'global' && !config.guildId) {
         console.warn('DISCORD_GUILD_ID is not set. Auto-syncing global commands; Discord may take a while to show them.');
       }
@@ -3003,8 +3010,10 @@ client.once(Events.ClientReady, async (readyClient) => {
         clientId: config.clientId || readyClient.user.id,
         guildId,
         scope,
+        clearGuildIds,
       });
-      console.log(`Auto-synced commands to ${scope}.`);
+      const cleaned = clearGuildIds.length > 0 ? ` Cleared guild commands in ${clearGuildIds.length} guild(s) to prevent duplicates.` : '';
+      console.log(`Auto-synced commands to ${scope}.${cleaned}`);
     } catch (error) {
       console.warn(`Auto command sync failed: ${error.message}`);
     }

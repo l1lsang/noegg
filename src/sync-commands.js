@@ -13,7 +13,17 @@ function resolveCommandScope({ configuredScope, guildId }) {
   return guildId ? 'guild' : 'global';
 }
 
-async function syncCommands({ token, clientId, guildId, scope = 'guild' }) {
+async function clearGuildCommands(rest, clientId, guildIds) {
+  const uniqueGuildIds = [...new Set((guildIds || []).filter(Boolean))];
+
+  for (const targetGuildId of uniqueGuildIds) {
+    await rest.put(Routes.applicationGuildCommands(clientId, targetGuildId), { body: [] });
+  }
+
+  return uniqueGuildIds;
+}
+
+async function syncCommands({ token, clientId, guildId, scope = 'guild', clearGuildIds = [] }) {
   if (!token) {
     throw new Error('DISCORD_TOKEN is required.');
   }
@@ -27,9 +37,11 @@ async function syncCommands({ token, clientId, guildId, scope = 'guild' }) {
 
   if (scope === 'global') {
     await rest.put(Routes.applicationCommands(clientId), { body });
+    const clearedGuildIds = await clearGuildCommands(rest, clientId, clearGuildIds);
     return {
       scope: 'global',
       count: body.length,
+      clearedGuildIds,
     };
   }
 
@@ -46,6 +58,7 @@ async function syncCommands({ token, clientId, guildId, scope = 'guild' }) {
 }
 
 module.exports = {
+  clearGuildCommands,
   resolveCommandScope,
   syncCommands,
 };

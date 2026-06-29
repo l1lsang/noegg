@@ -32,10 +32,14 @@ async function main() {
     clientId: config.clientId,
     guildId: config.guildId,
     scope,
+    clearGuildIds: scope === 'global' && config.guildId ? [config.guildId] : [],
   });
 
   const target = result.scope === 'global' ? 'global commands' : `guild ${result.guildId}`;
   console.log(`Synced ${result.count} commands to ${target}.`);
+  if (result.clearedGuildIds?.length) {
+    console.log(`Cleared guild commands in ${result.clearedGuildIds.length} guild(s) to prevent duplicates.`);
+  }
 }
 
 main().catch((error) => {
