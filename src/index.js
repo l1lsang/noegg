@@ -1,4 +1,5 @@
 const http = require('node:http');
+const { randomUUID } = require('node:crypto');
 const {
   ActionRowBuilder,
   ButtonBuilder,
@@ -19,23 +20,33 @@ const config = require('./config');
 const { createStore } = require('./store');
 const { resolveCommandScope, syncCommands } = require('./sync-commands');
 const {
+  fetchPolymarketMarket,
+  formatPolymarketPrice,
+  searchPolymarketMarkets,
+} = require('./polymarket');
+const {
   begReward,
   findOption,
   fishReward,
   formatCoins,
   formatRemaining,
   nextBetId,
+  normalizeKey,
   optionPools,
   parseOptions,
+  randomInt,
   totalBetPool,
 } = require('./game');
 
 const store = createStore(config);
 const ownerIds = new Set(config.ownerIds);
-const quickBetAmounts = [100, 500, 1000];
+const economyMultiplier = Math.max(1, Math.floor(config.economyMultiplier || 1));
+const quickBetAmounts = [100, 500, 1000].map((amount) => amount * economyMultiplier);
 const koreaTimeZone = 'Asia/Seoul';
 const blackjackSuits = ['♠', '♥', '♦', '♣'];
 const blackjackRanks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+const battleChallenges = new Map();
+const battleChallengeTtlMs = 5 * 60 * 1000;
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -189,6 +200,406 @@ function parseBetCustomId(customId) {
   };
 }
 
+function polymarketCustomId(...parts) {
+  return ['poly', ...parts].join(':');
+}
+
+function parsePolymarketCustomId(customId) {
+  const parts = String(customId || '').split(':');
+  if (parts[0] !== 'poly') {
+    return null;
+  }
+
+  return {
+    action: parts[1],
+    parts: parts.slice(2),
+  };
+}
+
+function battleCustomId(action, challengeId) {
+  return ['battle', action, challengeId].join(':');
+}
+
+function parseBattleCustomId(customId) {
+  const parts = String(customId || '').split(':');
+  if (parts[0] !== 'battle') {
+    return null;
+  }
+
+  return {
+    action: parts[1],
+    challengeId: parts[2],
+  };
+}
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function createBattleChallengeId() {
+  return randomUUID().replaceAll('-', '').slice(0, 16);
+}
+
+function getBattleChallenge(challengeId, guildId) {
+  const challenge = battleChallenges.get(challengeId);
+  if (!challenge || challenge.guildId !== guildId) {
+    return null;
+  }
+
+  if (Date.now() - challenge.createdAt > battleChallengeTtlMs) {
+    battleChallenges.delete(challengeId);
+    return null;
+  }
+
+  return challenge;
+}
+
+function getUserPower(user) {
+  const power = user.power && typeof user.power === 'object' ? user.power : {};
+  return {
+    attack: Number.isFinite(power.attack) ? Math.max(1, Math.floor(power.attack)) : 1,
+    defense: Number.isFinite(power.defense) ? Math.max(1, Math.floor(power.defense)) : 1,
+    luck: Number.isFinite(power.luck) ? Math.max(1, Math.floor(power.luck)) : 1,
+  };
+}
+
+function getPowerScore(power) {
+  return power.attack * 2 + power.defense * 1.6 + power.luck * 1.2;
+}
+
+function getInventoryItems(user) {
+  const inventory = user.inventory && typeof user.inventory === 'object' ? user.inventory : {};
+  return Object.entries(inventory)
+    .map(([key, rawItem]) => {
+      if (typeof rawItem === 'number') {
+        return {
+          key,
+          name: key,
+          count: Math.max(0, Math.floor(rawItem)),
+          bestValue: 0,
+          totalValue: 0,
+          weight: null,
+        };
+      }
+
+      const item = rawItem && typeof rawItem === 'object' ? rawItem : {};
+      const count = Number.isFinite(item.count) ? Math.max(0, Math.floor(item.count)) : 0;
+      const bestValue = Number.isFinite(item.bestValue)
+        ? Math.max(0, Math.floor(item.bestValue))
+        : Math.max(0, Math.floor(item.value || 0));
+
+      return {
+        key,
+        name: item.name || key,
+        count,
+        bestValue,
+        totalValue: Number.isFinite(item.totalValue) ? Math.max(0, Math.floor(item.totalValue)) : bestValue * count,
+        weight: Number.isFinite(item.weight) ? item.weight : null,
+        lastFoundAt: item.lastFoundAt || null,
+      };
+    })
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.bestValue - a.bestValue || b.count - a.count || a.name.localeCompare(b.name, 'ko-KR'));
+}
+
+function addInventoryItem(user, reward) {
+  user.inventory ||= {};
+  const key = normalizeKey(reward.label);
+  const existing = user.inventory[key];
+  const current = existing && typeof existing === 'object'
+    ? existing
+    : { name: reward.label, count: Number.isFinite(existing) ? Math.max(0, Math.floor(existing)) : 0 };
+  const bestValue = Math.max(
+    Number.isFinite(current.bestValue) ? current.bestValue : 0,
+    Number.isFinite(current.value) ? current.value : 0,
+    reward.amount,
+  );
+
+  user.inventory[key] = {
+    name: reward.label,
+    count: Math.max(0, Math.floor(current.count || 0)) + 1,
+    bestValue: Math.floor(bestValue),
+    totalValue: Math.max(0, Math.floor(current.totalValue || 0)) + reward.amount,
+    weight: reward.weight ?? current.weight ?? null,
+    lastFoundAt: new Date().toISOString(),
+  };
+
+  return user.inventory[key];
+}
+
+function findInventoryItem(user, rawName) {
+  const wanted = normalizeKey(rawName);
+  return getInventoryItems(user).find((item) => item.key === wanted || normalizeKey(item.name) === wanted);
+}
+
+function getItemPowerGain(item) {
+  const value = Math.max(1, item.bestValue || Math.floor((item.totalValue || 0) / Math.max(1, item.count)));
+  const tier = Math.max(1, Math.floor(Math.sqrt(value) / 10));
+  const hash = Array.from(item.name).reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  const gains = {
+    attack: 1,
+    defense: 1,
+    luck: 1,
+  };
+  const stats = ['attack', 'defense', 'luck'];
+  const primary = stats[hash % stats.length];
+  const secondary = stats[Math.floor(hash / stats.length) % stats.length];
+
+  gains[primary] += tier;
+  if (secondary !== primary) {
+    gains[secondary] += Math.max(1, Math.floor(tier / 2));
+  }
+
+  return gains;
+}
+
+function createInventoryEmbed(target, user) {
+  const items = getInventoryItems(user);
+  const power = getUserPower(user);
+  const displayName = target.globalName || target.username || user.displayName || user.username || target.id;
+  const itemLines = items.length > 0
+    ? items.slice(0, 12).map((item, index) => {
+      const valueText = item.bestValue > 0 ? `최고 ${formatCoins(item.bestValue)}` : '가치 미기록';
+      return `${index + 1}. ${item.name} x${item.count} (${valueText})`;
+    }).join('\n')
+    : '아직 보관함이 비어 있습니다. `/낚시`로 첫 아이템을 잡아보세요.';
+
+  const embed = new EmbedBuilder()
+    .setColor(0x3498db)
+    .setTitle(`${displayName}님의 보관함`)
+    .setDescription(itemLines)
+    .addFields(
+      {
+        name: '강화 수치',
+        value: `공격 ${power.attack} / 방어 ${power.defense} / 행운 ${power.luck}`,
+        inline: false,
+      },
+      {
+        name: '결투 기록',
+        value: `${user.stats?.battlesWon || 0}승 ${user.stats?.battlesLost || 0}패 / 수익 ${formatCoins(user.stats?.battleProfit || 0)}`,
+        inline: false,
+      },
+    );
+
+  if (items.length > 12) {
+    embed.setFooter({ text: `총 ${items.length}종 중 가치 높은 12종만 표시됩니다.` });
+  }
+
+  return embed;
+}
+
+function createItemUseEmbed(user, item, gain, power, remaining) {
+  return new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle('아이템 강화 성공')
+    .setDescription(`${user}님이 **${item.name}**을 사용했습니다.`)
+    .addFields(
+      { name: '강화 증가', value: `공격 +${gain.attack} / 방어 +${gain.defense} / 행운 +${gain.luck}`, inline: false },
+      { name: '현재 수치', value: `공격 ${power.attack} / 방어 ${power.defense} / 행운 ${power.luck}`, inline: false },
+      { name: '남은 아이템', value: `${remaining}개`, inline: true },
+    );
+}
+
+function createFishingEmbed(stage, payload = {}) {
+  const scenes = {
+    cast: {
+      color: 0x5865f2,
+      title: '낚시 시작',
+      text: '낚싯줄을 물가 깊숙이 던졌습니다.',
+      art: [
+        '      |',
+        '      |',
+        '~~~~~~|~~~~~~~~~~~~',
+        '      J',
+        '~~~~~~~~~~~~~~~~~~~',
+      ].join('\n'),
+    },
+    bite: {
+      color: 0xf1c40f,
+      title: '입질 감지',
+      text: '수면 아래에서 무언가 낚싯줄을 잡아당깁니다.',
+      art: [
+        '      |',
+        '      |   splash',
+        '~~~~~~|~~><>~~~~~~',
+        '      J',
+        '~~~~~~~~~~~~~~~~~~~',
+      ].join('\n'),
+    },
+    pull: {
+      color: 0xe67e22,
+      title: '끌어올리는 중',
+      text: '힘을 조절하며 천천히 끌어올립니다.',
+      art: [
+        '     \\|/',
+        '      |',
+        '~~~~~~|~~~~~~~~~~~~',
+        '     /J\\',
+        '~~~~~~~~~~><>~~~~~~',
+      ].join('\n'),
+    },
+    caught: {
+      color: 0x2ecc71,
+      title: '잡혔다!',
+      text: `${payload.user}님이 **${payload.reward?.label || '무언가'}**을 낚았습니다.`,
+      art: [
+        '      |',
+        '      |',
+        '~~~~~~|~~~~~~~~~~~~',
+        '     /J\\   GOT IT',
+        '~~~~><>~~~~~~~~~~~~',
+      ].join('\n'),
+    },
+  };
+  const scene = scenes[stage] || scenes.cast;
+  const embed = new EmbedBuilder()
+    .setColor(scene.color)
+    .setTitle(scene.title)
+    .setDescription(`${scene.text}\n\n\`\`\`\n${scene.art}\n\`\`\``);
+
+  if (stage === 'caught' && payload.reward) {
+    embed.addFields(
+      { name: '획득 가치', value: formatCoins(payload.reward.amount), inline: true },
+      { name: '보관함 추가', value: `${payload.inventoryItem?.name || payload.reward.label} x${payload.inventoryItem?.count || 1}`, inline: true },
+      { name: '현재 잔액', value: formatCoins(payload.balance), inline: true },
+    );
+  }
+
+  return embed;
+}
+
+function createBattleChallengeEmbed(challenge) {
+  const embed = new EmbedBuilder()
+    .setColor(0xfee75c)
+    .setTitle('결투 신청')
+    .setDescription(`<@${challenge.challengerId}>님이 <@${challenge.opponentId}>님에게 결투를 신청했습니다.`)
+    .addFields(
+      { name: '베팅 코인', value: challenge.wager > 0 ? formatCoins(challenge.wager) : '없음', inline: true },
+      { name: '수락 제한', value: '5분', inline: true },
+    );
+
+  return embed;
+}
+
+function createBattleChallengeComponents(challengeId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(battleCustomId('accept', challengeId))
+        .setLabel('수락')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(battleCustomId('decline', challengeId))
+        .setLabel('거절')
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
+function getBattleDisplayName(userId, records) {
+  const record = records[userId] || {};
+  return record.displayName || record.username || `<@${userId}>`;
+}
+
+function simulateBattle(challenge, challengerRecord, opponentRecord) {
+  const records = {
+    [challenge.challengerId]: challengerRecord,
+    [challenge.opponentId]: opponentRecord,
+  };
+  const challengerPower = getUserPower(challengerRecord);
+  const opponentPower = getUserPower(opponentRecord);
+  let challengerHp = 90 + challengerPower.defense * 9;
+  let opponentHp = 90 + opponentPower.defense * 9;
+  const rounds = [];
+
+  for (let round = 1; round <= 3 && challengerHp > 0 && opponentHp > 0; round += 1) {
+    const challengerDamage = Math.max(
+      1,
+      randomInt(10, 24) + challengerPower.attack * 3 + randomInt(0, challengerPower.luck) - opponentPower.defense,
+    );
+    const opponentDamage = Math.max(
+      1,
+      randomInt(10, 24) + opponentPower.attack * 3 + randomInt(0, opponentPower.luck) - challengerPower.defense,
+    );
+
+    opponentHp = Math.max(0, opponentHp - challengerDamage);
+    challengerHp = Math.max(0, challengerHp - opponentDamage);
+    rounds.push({
+      round,
+      challengerDamage,
+      opponentDamage,
+      challengerHp,
+      opponentHp,
+      text: `${round}라운드: ${getBattleDisplayName(challenge.challengerId, records)} ${challengerDamage} 피해, ${getBattleDisplayName(challenge.opponentId, records)} ${opponentDamage} 피해`,
+    });
+  }
+
+  let winnerId = challengerHp === opponentHp ? null : challengerHp > opponentHp ? challenge.challengerId : challenge.opponentId;
+  if (!winnerId) {
+    const challengerTiebreak = getPowerScore(challengerPower) + randomInt(1, 20);
+    const opponentTiebreak = getPowerScore(opponentPower) + randomInt(1, 20);
+    winnerId = challengerTiebreak >= opponentTiebreak ? challenge.challengerId : challenge.opponentId;
+    rounds.push({
+      round: rounds.length + 1,
+      challengerDamage: 0,
+      opponentDamage: 0,
+      challengerHp,
+      opponentHp,
+      text: `연장 판정: 집중력 싸움 끝에 ${getBattleDisplayName(winnerId, records)}님이 앞섰습니다.`,
+    });
+  }
+
+  return {
+    challengerPower,
+    opponentPower,
+    challengerHp,
+    opponentHp,
+    rounds,
+    winnerId,
+    loserId: winnerId === challenge.challengerId ? challenge.opponentId : challenge.challengerId,
+  };
+}
+
+function createBattleBroadcastEmbed(challenge, battle, visibleRounds = 0, finalResult = null) {
+  const embed = new EmbedBuilder()
+    .setColor(finalResult ? 0x57f287 : 0xed4245)
+    .setTitle(finalResult ? '결투 종료' : '결투 중계')
+    .setDescription(`<@${challenge.challengerId}> vs <@${challenge.opponentId}>`);
+
+  if (!battle) {
+    embed.addFields({ name: '대기', value: '상대가 결투장에 들어오는 중입니다.', inline: false });
+    return embed;
+  }
+
+  const roundLines = battle.rounds.slice(0, visibleRounds).map((round) => round.text);
+  embed.addFields(
+    {
+      name: '전투력',
+      value:
+        `<@${challenge.challengerId}> 공격 ${battle.challengerPower.attack} / 방어 ${battle.challengerPower.defense} / 행운 ${battle.challengerPower.luck}\n`
+        + `<@${challenge.opponentId}> 공격 ${battle.opponentPower.attack} / 방어 ${battle.opponentPower.defense} / 행운 ${battle.opponentPower.luck}`,
+      inline: false,
+    },
+    {
+      name: '중계',
+      value: roundLines.length > 0 ? roundLines.join('\n') : '첫 합을 준비하고 있습니다.',
+      inline: false,
+    },
+  );
+
+  if (finalResult) {
+    embed.addFields(
+      { name: '승자', value: `<@${finalResult.winnerId}>`, inline: true },
+      { name: '상금', value: finalResult.payout > 0 ? formatCoins(finalResult.payout) : '없음', inline: true },
+      { name: '최종 체력', value: `<@${challenge.challengerId}> ${battle.challengerHp} / <@${challenge.opponentId}> ${battle.opponentHp}`, inline: false },
+    );
+  }
+
+  return embed;
+}
+
 function createBetEmbed(bet) {
   const pools = optionPools(bet);
   const total = totalBetPool(bet);
@@ -211,7 +622,7 @@ function createBetEmbed(bet) {
     summaryLines.push(`종료: <t:${closedAt}:R>`);
   }
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(isOpen ? 0xd83a4b : 0x5865f2)
     .setTitle(`베팅 ${bet.id}`)
     .setDescription(`**${bet.topic}**`)
@@ -234,6 +645,115 @@ function createBetEmbed(bet) {
     })
     .setFooter({ text: `생성자 ${bet.createdBy}` })
     .setTimestamp(new Date(bet.createdAt));
+
+  if (bet.source?.type === 'polymarket') {
+    const sourceEndDate = bet.source.endDate ? getUnixTimestamp(bet.source.endDate) : null;
+    const sourceLines = [
+      `시장 ID: \`${bet.source.marketId}\``,
+      bet.source.url ? `[Polymarket에서 보기](${bet.source.url})` : null,
+      sourceEndDate ? `종료 예정: <t:${sourceEndDate}:R>` : null,
+      '실제 주문이 아닌 노코인 모의 베팅입니다.',
+    ].filter(Boolean);
+
+    embed.addFields({
+      name: 'Polymarket',
+      value: sourceLines.join('\n'),
+      inline: false,
+    });
+  }
+
+  return embed;
+}
+
+function createPolymarketMarketEmbed(market) {
+  const endDate = market.endDate ? getUnixTimestamp(market.endDate) : null;
+  const outcomeLines = market.outcomes.map((outcome, index) => {
+    const price = market.outcomePrices[index];
+    return `**${truncateText(outcome, 80)}** · ${formatPolymarketPrice(price)}`;
+  });
+  const status = market.closed ? '종료됨' : market.active ? '진행 중' : '비활성';
+
+  return new EmbedBuilder()
+    .setColor(market.active ? 0x2ecc71 : 0x95a5a6)
+    .setTitle(truncateText(market.question, 256))
+    .setDescription([
+      `[Polymarket에서 보기](${market.url})`,
+      '이 봇은 시장 정보만 가져오며 실제 Polymarket 주문은 넣지 않습니다.',
+    ].join('\n'))
+    .addFields(
+      {
+        name: '선택지',
+        value: outcomeLines.slice(0, 10).join('\n') || '선택지 없음',
+        inline: false,
+      },
+      {
+        name: '상태',
+        value: [
+          status,
+          `거래량: $${Math.floor(market.volume).toLocaleString('en-US')}`,
+          `유동성: $${Math.floor(market.liquidity).toLocaleString('en-US')}`,
+          endDate ? `종료 예정: <t:${endDate}:R>` : null,
+        ].filter(Boolean).join('\n'),
+        inline: false,
+      },
+      {
+        name: '시장 ID',
+        value: `\`${market.id}\``,
+        inline: false,
+      },
+    )
+    .setFooter({ text: '노코인 모의 베팅용 정보입니다.' });
+}
+
+function createPolymarketSearchEmbed(query, markets) {
+  const embed = new EmbedBuilder()
+    .setColor(0x27ae60)
+    .setTitle('Polymarket 검색')
+    .setDescription(`검색어: **${truncateText(query, 180)}**`);
+
+  embed.addFields(
+    markets.map((market, index) => ({
+      name: `${index + 1}. ${truncateText(market.question, 240)}`,
+      value: [
+        `ID: \`${market.id}\``,
+        market.outcomes.map((outcome, outcomeIndex) => (
+          `${truncateText(outcome, 40)} ${formatPolymarketPrice(market.outcomePrices[outcomeIndex])}`
+        )).slice(0, 4).join(' · '),
+      ].join('\n'),
+      inline: false,
+    })),
+  );
+
+  return embed;
+}
+
+function createPolymarketSearchComponents(markets) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(polymarketCustomId('select'))
+        .setPlaceholder('노코인 베팅으로 만들 시장 선택')
+        .addOptions(
+          markets.map((market, index) => ({
+            label: truncateText(`${index + 1}. ${market.question}`, 100),
+            value: market.id,
+            description: truncateText(market.outcomes.slice(0, 3).join(' / '), 100),
+          })),
+        ),
+    ),
+  ];
+}
+
+function createPolymarketMarketComponents(market) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(polymarketCustomId('create', market.id))
+        .setLabel('노코인 베팅 생성')
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(!market.active || market.closed || market.outcomes.length < 2),
+    ),
+  ];
 }
 
 function createBetListEmbed(openBets) {
@@ -687,6 +1207,73 @@ async function placeBet({ guildId, discordUser, betId, optionName, optionIndex, 
   });
 }
 
+async function createPolymarketBet({ guildId, discordUser, market }) {
+  if (!market.id) {
+    return { ok: false, reason: 'Polymarket 시장 ID를 확인할 수 없습니다.' };
+  }
+
+  if (!market.active || market.closed) {
+    return { ok: false, reason: '이 Polymarket 시장은 현재 열려 있지 않습니다.' };
+  }
+
+  if (market.outcomes.length < 2) {
+    return { ok: false, reason: '선택지가 부족해서 베팅을 만들 수 없습니다.' };
+  }
+
+  if (market.outcomes.length > 10) {
+    return { ok: false, reason: '선택지가 10개를 넘어 Discord 베팅 UI로 만들 수 없습니다.' };
+  }
+
+  return store.run((data) => {
+    const guild = store.ensureGuild(data, guildId);
+    store.ensureUser(guild, discordUser);
+    const existing = Object.values(guild.bets).find((bet) =>
+      bet.status === 'open' &&
+      bet.source?.type === 'polymarket' &&
+      bet.source.marketId === market.id
+    );
+
+    if (existing) {
+      return {
+        ok: true,
+        created: false,
+        bet: existing,
+      };
+    }
+
+    const id = nextBetId(guild);
+    const bet = {
+      id,
+      topic: `[Polymarket] ${market.question}`,
+      options: market.outcomes.map((name, index) => ({
+        name: truncateText(name, 60),
+        originalName: name,
+        price: market.outcomePrices[index],
+      })),
+      wagers: {},
+      status: 'open',
+      createdBy: discordUser.id,
+      createdAt: new Date().toISOString(),
+      source: {
+        type: 'polymarket',
+        marketId: market.id,
+        question: market.question,
+        url: market.url,
+        endDate: market.endDate,
+        outcomePrices: market.outcomePrices,
+        fetchedAt: new Date().toISOString(),
+      },
+    };
+
+    guild.bets[id] = bet;
+    return {
+      ok: true,
+      created: true,
+      bet,
+    };
+  });
+}
+
 async function handleHelp(interaction) {
   await reply(interaction, {
     content:
@@ -698,10 +1285,15 @@ async function handleHelp(interaction) {
         '`/베팅` 노코인 걸기',
         '`/베팅종료` 정답 선택지로 정산',
         '`/낚시` 낚시로 노코인 획득',
-        '`/구걸` 하루 1번 노코인 획득',
+        '`/보관함` 낚시 아이템과 강화 수치 확인',
+        '`/아이템사용` 보관함 아이템으로 유저 강화',
+        '`/결투` 상대와 결투 신청 및 노코인 베팅',
+        '`/구걸` 시간 쿨타임마다 노코인 획득',
         '`/동전던지기` 앞면/뒷면 도박',
         '`/주사위` 1-6 숫자 맞히기',
         '`/블랙잭` 딜러와 블랙잭',
+        '`/폴리마켓검색` Polymarket 정보로 노코인 베팅 생성',
+        '`/폴리마켓생성` market ID로 노코인 베팅 생성',
         '`/업데이트` 명령어 동기화',
       ].join('\n'),
     flags: MessageFlags.Ephemeral,
@@ -720,12 +1312,314 @@ async function handleWallet(interaction) {
     return {
       balance: user.balance,
       stats: user.stats,
+      power: getUserPower(user),
+      itemCount: getInventoryItems(user).reduce((sum, item) => sum + item.count, 0),
+    };
+  });
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`${target.globalName || target.username}님의 지갑`)
+    .addFields(
+      { name: '잔액', value: formatCoins(result.balance), inline: true },
+      { name: '보관 아이템', value: `${result.itemCount}개`, inline: true },
+      { name: '강화 수치', value: `공격 ${result.power.attack} / 방어 ${result.power.defense} / 행운 ${result.power.luck}`, inline: false },
+    );
+
+  await reply(interaction, {
+    content: `${target}님의 지갑입니다.`,
+    embeds: [embed],
+  });
+}
+
+async function handleInventory(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const target = interaction.options.getUser('유저') || interaction.user;
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, target);
+    return {
+      user,
     };
   });
 
   await reply(interaction, {
-    content: `${target}님의 잔액은 ${formatCoins(result.balance)}입니다.`,
+    embeds: [createInventoryEmbed(target, result.user)],
   });
+}
+
+async function handleUseItem(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const itemName = interaction.options.getString('아이템', true).trim();
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+    const item = findInventoryItem(user, itemName);
+
+    if (!item) {
+      const suggestions = getInventoryItems(user)
+        .slice(0, 5)
+        .map((inventoryItem) => inventoryItem.name)
+        .join(', ');
+
+      return {
+        ok: false,
+        reason: suggestions
+          ? `보관함에서 해당 아이템을 찾을 수 없습니다. 예: ${suggestions}`
+          : '보관함이 비어 있습니다. `/낚시`로 아이템을 먼저 얻어 주세요.',
+      };
+    }
+
+    const gain = getItemPowerGain(item);
+    user.power.attack += gain.attack;
+    user.power.defense += gain.defense;
+    user.power.luck += gain.luck;
+    user.stats.itemsUsed += 1;
+
+    const current = user.inventory[item.key];
+    if (current && typeof current === 'object') {
+      current.count = Math.max(0, Math.floor(current.count || 0) - 1);
+      if (current.count <= 0) {
+        delete user.inventory[item.key];
+      }
+    } else {
+      delete user.inventory[item.key];
+    }
+
+    return {
+      ok: true,
+      item,
+      gain,
+      power: getUserPower(user),
+      remaining: user.inventory[item.key]?.count || 0,
+    };
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await reply(interaction, {
+    embeds: [createItemUseEmbed(interaction.user, result.item, result.gain, result.power, result.remaining)],
+  });
+}
+
+async function handleBattle(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const opponent = interaction.options.getUser('상대', true);
+  const wager = interaction.options.getInteger('금액') || 0;
+
+  if (opponent.id === interaction.user.id) {
+    await reply(interaction, {
+      content: '자기 자신에게 결투를 걸 수는 없습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (opponent.bot) {
+    await reply(interaction, {
+      content: '봇에게는 결투를 걸 수 없습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const check = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const challengerRecord = store.ensureUser(guild, interaction.user);
+    const opponentRecord = store.ensureUser(guild, opponent);
+
+    if (wager > 0 && challengerRecord.balance < wager) {
+      return {
+        ok: false,
+        reason: `신청자의 노코인이 부족합니다. 현재 잔액: ${formatCoins(challengerRecord.balance)}`,
+      };
+    }
+
+    if (wager > 0 && opponentRecord.balance < wager) {
+      return {
+        ok: false,
+        reason: `상대의 노코인이 부족합니다. 상대 잔액: ${formatCoins(opponentRecord.balance)}`,
+      };
+    }
+
+    return { ok: true };
+  });
+
+  if (!check.ok) {
+    await reply(interaction, {
+      content: check.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const challengeId = createBattleChallengeId();
+  const challenge = {
+    id: challengeId,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    challengerId: interaction.user.id,
+    opponentId: opponent.id,
+    wager,
+    createdAt: Date.now(),
+  };
+  battleChallenges.set(challengeId, challenge);
+
+  await reply(interaction, {
+    content: `${opponent}님, 결투 신청이 왔습니다.`,
+    embeds: [createBattleChallengeEmbed(challenge)],
+    components: createBattleChallengeComponents(challengeId),
+  });
+}
+
+async function handleBattleUiInteraction(interaction) {
+  const parsed = parseBattleCustomId(interaction.customId);
+  if (!parsed) {
+    return false;
+  }
+
+  if (!interaction.isButton()) {
+    return false;
+  }
+
+  if (!(await requireGuild(interaction))) {
+    return true;
+  }
+
+  const challenge = getBattleChallenge(parsed.challengeId, interaction.guildId);
+  if (!challenge) {
+    await interaction.reply({
+      content: '이 결투 신청은 만료되었거나 찾을 수 없습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (interaction.user.id !== challenge.opponentId) {
+    await interaction.reply({
+      content: '이 결투는 지목된 상대만 수락하거나 거절할 수 있습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  battleChallenges.delete(parsed.challengeId);
+
+  if (parsed.action === 'decline') {
+    await interaction.update({
+      content: '결투 신청이 거절되었습니다.',
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x95a5a6)
+          .setTitle('결투 취소')
+          .setDescription(`<@${challenge.opponentId}>님이 <@${challenge.challengerId}>님의 결투 신청을 거절했습니다.`),
+      ],
+      components: [],
+    });
+    return true;
+  }
+
+  if (parsed.action !== 'accept') {
+    await interaction.reply({
+      content: '알 수 없는 결투 버튼입니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  await interaction.update({
+    content: '결투가 시작되었습니다.',
+    embeds: [createBattleBroadcastEmbed(challenge, null)],
+    components: [],
+  });
+
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const challengerRecord = store.ensureUser(guild, challenge.challengerId);
+    const opponentRecord = store.ensureUser(guild, challenge.opponentId);
+
+    if (challenge.wager > 0 && challengerRecord.balance < challenge.wager) {
+      return {
+        ok: false,
+        reason: `신청자의 노코인이 부족해서 결투가 취소되었습니다. 현재 잔액: ${formatCoins(challengerRecord.balance)}`,
+      };
+    }
+
+    if (challenge.wager > 0 && opponentRecord.balance < challenge.wager) {
+      return {
+        ok: false,
+        reason: `상대의 노코인이 부족해서 결투가 취소되었습니다. 현재 잔액: ${formatCoins(opponentRecord.balance)}`,
+      };
+    }
+
+    if (challenge.wager > 0) {
+      challengerRecord.balance -= challenge.wager;
+      opponentRecord.balance -= challenge.wager;
+    }
+
+    const battle = simulateBattle(challenge, challengerRecord, opponentRecord);
+    const winner = battle.winnerId === challenge.challengerId ? challengerRecord : opponentRecord;
+    const loser = battle.loserId === challenge.challengerId ? challengerRecord : opponentRecord;
+    const payout = challenge.wager * 2;
+
+    winner.balance += payout;
+    winner.stats.battlesWon += 1;
+    winner.stats.battleProfit += challenge.wager;
+    loser.stats.battlesLost += 1;
+    loser.stats.battleProfit -= challenge.wager;
+
+    return {
+      ok: true,
+      battle,
+      finalResult: {
+        winnerId: battle.winnerId,
+        loserId: battle.loserId,
+        payout,
+        winnerBalance: winner.balance,
+        loserBalance: loser.balance,
+      },
+    };
+  });
+
+  if (!result.ok) {
+    await interaction.editReply({
+      content: result.reason,
+      embeds: [],
+      components: [],
+    });
+    return true;
+  }
+
+  for (let visibleRounds = 1; visibleRounds <= result.battle.rounds.length; visibleRounds += 1) {
+    await wait(900);
+    await interaction.editReply({
+      embeds: [createBattleBroadcastEmbed(challenge, result.battle, visibleRounds)],
+    });
+  }
+
+  await wait(900);
+  await interaction.editReply({
+    content: '결투가 종료되었습니다.',
+    embeds: [createBattleBroadcastEmbed(challenge, result.battle, result.battle.rounds.length, result.finalResult)],
+    components: [],
+  });
+
+  return true;
 }
 
 async function handleCreateBet(interaction) {
@@ -1105,6 +1999,126 @@ async function handleBetUiInteraction(interaction) {
   return true;
 }
 
+async function handlePolymarketSearch(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const query = interaction.options.getString('검색어', true).trim();
+  await interaction.deferReply();
+
+  const markets = await searchPolymarketMarkets(query, 5);
+  if (markets.length === 0) {
+    await reply(interaction, {
+      content: '검색 결과가 없습니다. 다른 키워드로 다시 검색해 주세요.',
+    });
+    return;
+  }
+
+  await reply(interaction, {
+    embeds: [createPolymarketSearchEmbed(query, markets)],
+    components: createPolymarketSearchComponents(markets),
+  });
+}
+
+async function handlePolymarketCreate(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const marketId = interaction.options.getString('시장id', true).trim();
+  await interaction.deferReply();
+
+  const market = await fetchPolymarketMarket(marketId);
+  const result = await createPolymarketBet({
+    guildId: interaction.guildId,
+    discordUser: interaction.user,
+    market,
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+    });
+    return;
+  }
+
+  await reply(interaction, {
+    content: result.created
+      ? `Polymarket 시장으로 노코인 베팅 ${result.bet.id}을 만들었습니다.`
+      : `이미 열린 노코인 베팅 ${result.bet.id}이 있습니다.`,
+    embeds: [createBetEmbed(result.bet)],
+    components: createBetComponents(result.bet),
+  });
+}
+
+async function handlePolymarketMarketSelect(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return true;
+  }
+
+  const marketId = interaction.values[0];
+  await interaction.deferUpdate();
+  const market = await fetchPolymarketMarket(marketId);
+  await interaction.editReply({
+    embeds: [createPolymarketMarketEmbed(market)],
+    components: createPolymarketMarketComponents(market),
+  });
+  return true;
+}
+
+async function handlePolymarketCreateButton(interaction, parsed) {
+  if (!(await requireGuild(interaction))) {
+    return true;
+  }
+
+  const [marketId] = parsed.parts;
+  await interaction.deferReply();
+  const market = await fetchPolymarketMarket(marketId);
+  const result = await createPolymarketBet({
+    guildId: interaction.guildId,
+    discordUser: interaction.user,
+    market,
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+    });
+    return true;
+  }
+
+  await reply(interaction, {
+    content: result.created
+      ? `Polymarket 시장으로 노코인 베팅 ${result.bet.id}을 만들었습니다.`
+      : `이미 열린 노코인 베팅 ${result.bet.id}이 있습니다.`,
+    embeds: [createBetEmbed(result.bet)],
+    components: createBetComponents(result.bet),
+  });
+  return true;
+}
+
+async function handlePolymarketUiInteraction(interaction) {
+  const parsed = parsePolymarketCustomId(interaction.customId);
+  if (!parsed) {
+    return false;
+  }
+
+  if (interaction.isStringSelectMenu() && parsed.action === 'select') {
+    return handlePolymarketMarketSelect(interaction);
+  }
+
+  if (interaction.isButton() && parsed.action === 'create') {
+    return handlePolymarketCreateButton(interaction, parsed);
+  }
+
+  await interaction.reply({
+    content: '처리할 수 없는 Polymarket UI입니다.',
+    flags: MessageFlags.Ephemeral,
+  });
+  return true;
+}
+
 async function handleCloseBet(interaction) {
   if (!(await requireGuild(interaction))) {
     return;
@@ -1261,14 +2275,16 @@ async function handleFishing(interaction) {
       return { ok: false, remaining };
     }
 
-    const reward = fishReward();
+    const reward = fishReward(config.economyMultiplier);
     user.balance += reward.amount;
     user.stats.fishing += 1;
+    const inventoryItem = addInventoryItem(user, reward);
     guild.cooldowns.fishing[interaction.user.id] = now;
 
     return {
       ok: true,
       reward,
+      inventoryItem,
       balance: user.balance,
     };
   });
@@ -1281,7 +2297,33 @@ async function handleFishing(interaction) {
     return;
   }
 
-  await reply(interaction, `${interaction.user}님이 ${result.reward.label}을 낚아 ${formatCoins(result.reward.amount)}을 얻었습니다. 현재 잔액: ${formatCoins(result.balance)}`);
+  await interaction.deferReply();
+  await interaction.editReply({
+    content: `${interaction.user}님의 낚시`,
+    embeds: [createFishingEmbed('cast')],
+  });
+  await wait(850);
+  await interaction.editReply({
+    content: `${interaction.user}님의 낚시`,
+    embeds: [createFishingEmbed('bite')],
+  });
+  await wait(850);
+  await interaction.editReply({
+    content: `${interaction.user}님의 낚시`,
+    embeds: [createFishingEmbed('pull')],
+  });
+  await wait(850);
+  await interaction.editReply({
+    content: `${interaction.user}님의 낚시 결과`,
+    embeds: [
+      createFishingEmbed('caught', {
+        user: interaction.user,
+        reward: result.reward,
+        inventoryItem: result.inventoryItem,
+        balance: result.balance,
+      }),
+    ],
+  });
 }
 
 async function handleBegging(interaction) {
@@ -1290,24 +2332,20 @@ async function handleBegging(interaction) {
   }
 
   const now = Date.now();
-  const todayKey = getKoreaDayKey(now);
   const result = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     const user = store.ensureUser(guild, interaction.user);
-    const migratedDayKey = guild.cooldowns.begging[interaction.user.id]
-      ? getKoreaDayKey(guild.cooldowns.begging[interaction.user.id])
-      : null;
-    const lastUsedDay = guild.dailyActions.begging[interaction.user.id] || migratedDayKey;
+    const lastUsed = guild.cooldowns.begging[interaction.user.id] || 0;
+    const remaining = lastUsed + config.beggingCooldownMs - now;
 
-    if (lastUsedDay === todayKey) {
-      return { ok: false, remaining: getNextKoreaMidnightMs(now) - now };
+    if (remaining > 0) {
+      return { ok: false, remaining };
     }
 
-    const reward = begReward();
+    const reward = begReward(config.economyMultiplier);
     user.balance += reward.amount;
     user.stats.begging += 1;
     guild.cooldowns.begging[interaction.user.id] = now;
-    guild.dailyActions.begging[interaction.user.id] = todayKey;
 
     return {
       ok: true,
@@ -1318,7 +2356,7 @@ async function handleBegging(interaction) {
 
   if (!result.ok) {
     await reply(interaction, {
-      content: `오늘 구걸은 이미 했습니다. 한국시간 00:00에 초기화됩니다. 남은 시간: ${formatRemaining(result.remaining)}`,
+      content: `아직 구걸할 수 없습니다. 남은 시간: ${formatRemaining(result.remaining)}`,
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -1679,6 +2717,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (handledBlackjack) {
         return;
       }
+
+      const handledPolymarket = await handlePolymarketUiInteraction(interaction);
+      if (handledPolymarket) {
+        return;
+      }
+
+      const handledBattle = await handleBattleUiInteraction(interaction);
+      if (handledBattle) {
+        return;
+      }
     }
 
     if (!interaction.isChatInputCommand()) {
@@ -1710,6 +2758,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case '낚시':
         await handleFishing(interaction);
         break;
+      case '보관함':
+        await handleInventory(interaction);
+        break;
+      case '아이템사용':
+        await handleUseItem(interaction);
+        break;
+      case '결투':
+        await handleBattle(interaction);
+        break;
       case '구걸':
         await handleBegging(interaction);
         break;
@@ -1721,6 +2778,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case '블랙잭':
         await handleBlackjack(interaction);
+        break;
+      case '폴리마켓검색':
+        await handlePolymarketSearch(interaction);
+        break;
+      case '폴리마켓생성':
+        await handlePolymarketCreate(interaction);
         break;
       case '업데이트':
         await handleUpdate(interaction);

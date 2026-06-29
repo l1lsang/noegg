@@ -15,6 +15,11 @@ function toPositiveInt(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function toPositiveNumber(value, fallback) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function splitIds(value) {
   if (!value) {
     return [];
@@ -29,6 +34,11 @@ function splitIds(value) {
 const dataFile =
   process.env.DATA_FILE ||
   path.join(process.env.DATA_DIR || path.join(process.cwd(), 'data'), 'db.json');
+const economyMultiplier = toPositiveNumber(process.env.ECONOMY_MULTIPLIER, 100);
+const beggingCooldownMinutes = toPositiveNumber(process.env.BEGGING_COOLDOWN_MINUTES, null);
+const beggingCooldownMs = beggingCooldownMinutes != null
+  ? beggingCooldownMinutes * 60 * 1000
+  : toPositiveNumber(process.env.BEGGING_COOLDOWN_HOURS, 5 / 60) * 60 * 60 * 1000;
 
 module.exports = {
   token: process.env.DISCORD_TOKEN,
@@ -37,8 +47,10 @@ module.exports = {
   ownerIds: splitIds(process.env.BOT_OWNER_IDS),
   autoSyncCommands: toBoolean(process.env.AUTO_SYNC_COMMANDS, false),
   syncScope: (process.env.SYNC_SCOPE || '').toLowerCase(),
-  startingBalance: toPositiveInt(process.env.STARTING_BALANCE, 1000),
-  fishingCooldownMs: toPositiveInt(process.env.FISHING_COOLDOWN_SECONDS, 300) * 1000,
+  startingBalance: toPositiveInt(process.env.STARTING_BALANCE, Math.floor(1000 * economyMultiplier)),
+  economyMultiplier,
+  fishingCooldownMs: toPositiveInt(process.env.FISHING_COOLDOWN_SECONDS, 60) * 1000,
+  beggingCooldownMs,
   storageBackend: (process.env.STORAGE_BACKEND || 'firestore').toLowerCase(),
   firestoreProjectId: process.env.FIRESTORE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT,
   firestoreCollection: process.env.FIRESTORE_COLLECTION || 'nocoinBot',

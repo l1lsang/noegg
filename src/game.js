@@ -85,6 +85,10 @@ function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+function scaleAmount(amount, multiplier = 1) {
+  return Math.max(0, Math.floor(amount * multiplier));
+}
+
 const FISHING_TABLE = [
   { name: '낡은 세냥 양말', min: 5, max: 20, weight: 20 },
   { name: '남랭이 딜도', min: 20, max: 60, weight: 35 },
@@ -107,19 +111,25 @@ const BEGGING_TABLE = [
   { text: '노코인 부자가 크게 베풀었습니다(우흥~).', min: 250, max: 500, weight: 5 },
 ];
 
-function fishReward() {
+function fishReward(multiplier = 1) {
   const picked = weightedPick(FISHING_TABLE);
+  const baseAmount = randomInt(picked.min, picked.max);
   return {
     label: picked.name,
-    amount: randomInt(picked.min, picked.max),
+    amount: scaleAmount(baseAmount, multiplier),
+    baseAmount,
+    weight: picked.weight,
   };
 }
 
-function begReward() {
+function begReward(multiplier = 1) {
   const picked = weightedPick(BEGGING_TABLE);
+  const baseAmount = randomInt(picked.min, picked.max);
   return {
     label: picked.text,
-    amount: randomInt(picked.min, picked.max),
+    amount: scaleAmount(baseAmount, multiplier),
+    baseAmount,
+    weight: picked.weight,
   };
 }
 
@@ -133,5 +143,6 @@ module.exports = {
   normalizeKey,
   optionPools,
   parseOptions,
+  randomInt,
   totalBetPool,
 };

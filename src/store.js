@@ -90,6 +90,16 @@ class BaseStore {
         blackjackWon: 0,
         blackjackLost: 0,
         blackjackPushed: 0,
+        battlesWon: 0,
+        battlesLost: 0,
+        battleProfit: 0,
+        itemsUsed: 0,
+      },
+      inventory: {},
+      power: {
+        attack: 1,
+        defense: 1,
+        luck: 1,
       },
       createdAt: new Date().toISOString(),
     };
@@ -108,6 +118,15 @@ class BaseStore {
     record.stats.blackjackWon ||= 0;
     record.stats.blackjackLost ||= 0;
     record.stats.blackjackPushed ||= 0;
+    record.stats.battlesWon ||= 0;
+    record.stats.battlesLost ||= 0;
+    record.stats.battleProfit ||= 0;
+    record.stats.itemsUsed ||= 0;
+    record.inventory = record.inventory && typeof record.inventory === 'object' ? record.inventory : {};
+    record.power = record.power && typeof record.power === 'object' ? record.power : {};
+    record.power.attack = Number.isFinite(record.power.attack) ? Math.max(1, Math.floor(record.power.attack)) : 1;
+    record.power.defense = Number.isFinite(record.power.defense) ? Math.max(1, Math.floor(record.power.defense)) : 1;
+    record.power.luck = Number.isFinite(record.power.luck) ? Math.max(1, Math.floor(record.power.luck)) : 1;
 
     if (typeof discordUser !== 'string') {
       record.username = discordUser.username;

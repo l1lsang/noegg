@@ -17,6 +17,14 @@ services:
         value: "true"
       - key: SYNC_SCOPE
         value: global
+      - key: STARTING_BALANCE
+        value: "100000"
+      - key: ECONOMY_MULTIPLIER
+        value: "100"
+      - key: FISHING_COOLDOWN_SECONDS
+        value: "60"
+      - key: BEGGING_COOLDOWN_MINUTES
+        value: "5"
       - key: STORAGE_BACKEND
         value: firestore
       - key: FIRESTORE_PROJECT_ID

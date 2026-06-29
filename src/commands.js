@@ -113,6 +113,45 @@ function buildCommandData() {
       .setDescription('낚시를 해서 노코인을 얻습니다.'),
 
     new SlashCommandBuilder()
+      .setName('보관함')
+      .setDescription('낚시로 얻은 아이템과 강화 수치를 확인합니다.')
+      .addUserOption((option) =>
+        option
+          .setName('유저')
+          .setDescription('보관함을 확인할 유저입니다.')
+          .setRequired(false),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('아이템사용')
+      .setDescription('보관함 아이템 1개를 사용해서 유저를 강화합니다.')
+      .addStringOption((option) =>
+        option
+          .setName('아이템')
+          .setDescription('사용할 아이템 이름입니다. `/보관함`에서 확인할 수 있습니다.')
+          .setRequired(true)
+          .setMaxLength(80),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('결투')
+      .setDescription('상대에게 결투를 신청하고 노코인을 걸 수 있습니다.')
+      .addUserOption((option) =>
+        option
+          .setName('상대')
+          .setDescription('결투를 신청할 상대입니다.')
+          .setRequired(true),
+      )
+      .addIntegerOption((option) =>
+        option
+          .setName('금액')
+          .setDescription('각자 걸 노코인 금액입니다. 생략하면 코인 없이 싸웁니다.')
+          .setRequired(false)
+          .setMinValue(0)
+          .setMaxValue(100000000),
+      ),
+
+    new SlashCommandBuilder()
       .setName('구걸')
       .setDescription('구걸을 해서 노코인을 얻습니다.'),
 
@@ -168,6 +207,28 @@ function buildCommandData() {
           .setRequired(true)
           .setMinValue(1)
           .setMaxValue(100000000),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('폴리마켓검색')
+      .setDescription('Polymarket 공개 시장을 검색합니다.')
+      .addStringOption((option) =>
+        option
+          .setName('검색어')
+          .setDescription('검색할 Polymarket 시장 키워드입니다.')
+          .setRequired(true)
+          .setMaxLength(100),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('폴리마켓생성')
+      .setDescription('Polymarket 시장 정보로 노코인 베팅을 생성합니다.')
+      .addStringOption((option) =>
+        option
+          .setName('시장id')
+          .setDescription('Polymarket market ID입니다.')
+          .setRequired(true)
+          .setMaxLength(80),
       ),
   ];
 
