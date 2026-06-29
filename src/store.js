@@ -96,6 +96,7 @@ class BaseStore {
         itemsUsed: 0,
       },
       inventory: {},
+      evolutions: {},
       power: {
         attack: 1,
         defense: 1,
@@ -123,6 +124,7 @@ class BaseStore {
     record.stats.battleProfit ||= 0;
     record.stats.itemsUsed ||= 0;
     record.inventory = record.inventory && typeof record.inventory === 'object' ? record.inventory : {};
+    record.evolutions = record.evolutions && typeof record.evolutions === 'object' ? record.evolutions : {};
     record.power = record.power && typeof record.power === 'object' ? record.power : {};
     record.power.attack = Number.isFinite(record.power.attack) ? Math.max(1, Math.floor(record.power.attack)) : 1;
     record.power.defense = Number.isFinite(record.power.defense) ? Math.max(1, Math.floor(record.power.defense)) : 1;

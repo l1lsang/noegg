@@ -21,6 +21,7 @@ const { createStore } = require('./store');
 const { resolveCommandScope, syncCommands } = require('./sync-commands');
 const {
   fetchPolymarketMarket,
+  fetchPolymarketPriceCharts,
   formatPolymarketPrice,
   searchPolymarketMarkets,
 } = require('./polymarket');
@@ -30,6 +31,7 @@ const {
   fishReward,
   formatCoins,
   formatRemaining,
+  getItemEvolution,
   nextBetId,
   normalizeKey,
   optionPools,
@@ -163,6 +165,71 @@ function progressBar(value, total, size = 12) {
   return `${'█'.repeat(filled)}${'░'.repeat(size - filled)}`;
 }
 
+function sampleValues(values, maxPoints) {
+  if (values.length <= maxPoints) {
+    return values;
+  }
+
+  return Array.from({ length: maxPoints }, (_, index) => {
+    const sourceIndex = Math.round((index / (maxPoints - 1)) * (values.length - 1));
+    return values[sourceIndex];
+  });
+}
+
+function createSparkline(values, size = 28) {
+  const validValues = values.filter((value) => Number.isFinite(value));
+  if (validValues.length === 0) {
+    return null;
+  }
+
+  const sampled = sampleValues(validValues, size);
+  const min = Math.min(...sampled);
+  const max = Math.max(...sampled);
+  const blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+  if (max === min) {
+    return blocks[3].repeat(sampled.length);
+  }
+
+  return sampled
+    .map((value) => {
+      const ratio = (value - min) / (max - min);
+      return blocks[Math.min(blocks.length - 1, Math.max(0, Math.round(ratio * (blocks.length - 1))))];
+    })
+    .join('');
+}
+
+function formatPricePercent(value) {
+  if (!Number.isFinite(value)) {
+    return 'n/a';
+  }
+
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatPolymarketChartField(charts) {
+  const lines = (charts || [])
+    .map((chart) => {
+      if (!chart.ok || chart.points.length === 0) {
+        return `${truncateText(chart.outcome, 32)}: 차트 없음`;
+      }
+
+      const prices = chart.points.map((point) => point.price);
+      const sparkline = createSparkline(prices);
+      const first = prices[0];
+      const last = prices[prices.length - 1];
+      return [
+        `${truncateText(chart.outcome, 32)} ${formatPricePercent(first)} -> ${formatPricePercent(last)}`,
+        sparkline,
+      ].filter(Boolean).join('\n');
+    })
+    .filter(Boolean);
+
+  return lines.length > 0
+    ? lines.join('\n')
+    : '가격 히스토리를 표시할 수 없습니다.';
+}
+
 function getUnixTimestamp(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : Math.floor(date.getTime() / 1000);
@@ -269,6 +336,126 @@ function getPowerScore(power) {
   return power.attack * 2 + power.defense * 1.6 + power.luck * 1.2;
 }
 
+function getEvolutionStatBias(evolution) {
+  const bias = evolution?.statBias || {};
+  return {
+    attack: Number.isFinite(bias.attack) ? bias.attack : 0,
+    defense: Number.isFinite(bias.defense) ? bias.defense : 0,
+    luck: Number.isFinite(bias.luck) ? bias.luck : 0,
+  };
+}
+
+function getUserEvolutions(user) {
+  const evolutions = user.evolutions && typeof user.evolutions === 'object' ? user.evolutions : {};
+  return Object.entries(evolutions)
+    .map(([key, rawEvolution]) => {
+      const record = rawEvolution && typeof rawEvolution === 'object' ? rawEvolution : {};
+      const itemName = record.itemName || key;
+      const definition = getItemEvolution(itemName);
+      return {
+        key,
+        itemName,
+        name: record.name || definition.evolution,
+        level: Number.isFinite(record.level) ? Math.max(1, Math.floor(record.level)) : 1,
+        used: Number.isFinite(record.used) ? Math.max(1, Math.floor(record.used)) : 1,
+        lastUsedAt: record.lastUsedAt || null,
+        definition,
+      };
+    })
+    .sort((a, b) => b.level - a.level || b.used - a.used || a.name.localeCompare(b.name, 'ko-KR'));
+}
+
+function getBattleStyle(user) {
+  const evolutions = getUserEvolutions(user);
+  const totals = evolutions.reduce(
+    (sum, evolution) => {
+      const bias = getEvolutionStatBias(evolution.definition);
+      const levelWeight = Math.max(1, evolution.level);
+      sum.attack += bias.attack * levelWeight;
+      sum.defense += bias.defense * levelWeight;
+      sum.luck += bias.luck * levelWeight;
+      return sum;
+    },
+    { attack: 0, defense: 0, luck: 0 },
+  );
+
+  return {
+    evolutions,
+    attackBonus: Math.min(40, totals.attack),
+    defenseBonus: Math.min(40, totals.defense),
+    luckBonus: Math.min(40, totals.luck),
+  };
+}
+
+function formatEvolutionSummary(user, maxItems = 4) {
+  const evolutions = getUserEvolutions(user);
+  if (evolutions.length === 0) {
+    return '아직 진화가 없습니다. `/아이템사용`으로 낚시 아이템을 사용해 진화할 수 있습니다.';
+  }
+
+  return evolutions
+    .slice(0, maxItems)
+    .map((evolution) => `${evolution.name} Lv.${evolution.level} (${evolution.itemName})`)
+    .join('\n');
+}
+
+function pickBattleEvolution(style, round, luckRoll) {
+  if (style.evolutions.length === 0) {
+    return {
+      name: '맨몸 도전자',
+      level: 1,
+      definition: {
+        evolution: '맨몸 도전자',
+        attack: '정면 타격',
+        motion: '자세를 낮추고 빈틈을 향해 곧장 파고듭니다.',
+        ultimate: '마지막 집중',
+        ultimateMotion: '남은 힘을 모아 한 번 더 밀어붙입니다.',
+        statBias: { attack: 0, defense: 0, luck: 0 },
+      },
+    };
+  }
+
+  return style.evolutions[(round + luckRoll) % style.evolutions.length];
+}
+
+function resolveBattleMove({
+  attackerId,
+  defenderId,
+  records,
+  attackerPower,
+  defenderPower,
+  attackerStyle,
+  defenderStyle,
+  round,
+}) {
+  const luckRoll = randomInt(0, Math.max(1, attackerPower.luck + attackerStyle.luckBonus));
+  const evolution = pickBattleEvolution(attackerStyle, round - 1, luckRoll);
+  const definition = evolution.definition;
+  const shouldUltimate = round >= 3 || luckRoll >= Math.max(4, defenderPower.luck + 4);
+  const attackName = shouldUltimate ? definition.ultimate : definition.attack;
+  const motion = shouldUltimate ? definition.ultimateMotion : definition.motion;
+  const baseDamage = randomInt(12, 28);
+  const evolutionLevel = Math.max(1, evolution.level || 1);
+  const rawDamage = baseDamage
+    + attackerPower.attack * 3
+    + attackerStyle.attackBonus
+    + evolutionLevel * (shouldUltimate ? 5 : 2)
+    + luckRoll;
+  const mitigation = Math.floor((defenderPower.defense * 1.4) + (defenderStyle.defenseBonus * 0.7));
+  const damage = Math.max(1, rawDamage - mitigation);
+
+  return {
+    damage,
+    isUltimate: shouldUltimate,
+    text: [
+      `${getBattleDisplayName(attackerId, records)} [${evolution.name} Lv.${evolutionLevel}]`,
+      `${shouldUltimate ? '궁극기' : '기술'}: ${attackName}`,
+      `${motion}`,
+      `<@${defenderId}>에게 ${damage} 피해`,
+    ].join('\n'),
+  };
+}
+
 function getInventoryItems(user) {
   const inventory = user.inventory && typeof user.inventory === 'object' ? user.inventory : {};
   return Object.entries(inventory)
@@ -337,22 +524,38 @@ function findInventoryItem(user, rawName) {
 function getItemPowerGain(item) {
   const value = Math.max(1, item.bestValue || Math.floor((item.totalValue || 0) / Math.max(1, item.count)));
   const tier = Math.max(1, Math.floor(Math.sqrt(value) / 10));
-  const hash = Array.from(item.name).reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  const evolution = getItemEvolution(item.name);
+  const bias = getEvolutionStatBias(evolution);
   const gains = {
-    attack: 1,
-    defense: 1,
-    luck: 1,
+    attack: 1 + Math.max(0, bias.attack) * tier,
+    defense: 1 + Math.max(0, bias.defense) * tier,
+    luck: 1 + Math.max(0, bias.luck) * tier,
   };
-  const stats = ['attack', 'defense', 'luck'];
-  const primary = stats[hash % stats.length];
-  const secondary = stats[Math.floor(hash / stats.length) % stats.length];
 
-  gains[primary] += tier;
-  if (secondary !== primary) {
-    gains[secondary] += Math.max(1, Math.floor(tier / 2));
-  }
+  return {
+    ...gains,
+    evolution,
+  };
+}
 
-  return gains;
+function applyItemEvolution(user, item, evolution) {
+  user.evolutions ||= {};
+  const current = user.evolutions[item.key] && typeof user.evolutions[item.key] === 'object'
+    ? user.evolutions[item.key]
+    : {};
+  const level = Math.max(0, Math.floor(current.level || 0)) + 1;
+
+  user.evolutions[item.key] = {
+    itemName: item.name,
+    name: evolution.evolution,
+    level,
+    used: Math.max(0, Math.floor(current.used || 0)) + 1,
+    attack: evolution.attack,
+    ultimate: evolution.ultimate,
+    lastUsedAt: new Date().toISOString(),
+  };
+
+  return user.evolutions[item.key];
 }
 
 function createInventoryEmbed(target, user) {
@@ -377,6 +580,11 @@ function createInventoryEmbed(target, user) {
         inline: false,
       },
       {
+        name: '진화',
+        value: formatEvolutionSummary(user),
+        inline: false,
+      },
+      {
         name: '결투 기록',
         value: `${user.stats?.battlesWon || 0}승 ${user.stats?.battlesLost || 0}패 / 수익 ${formatCoins(user.stats?.battleProfit || 0)}`,
         inline: false,
@@ -390,14 +598,15 @@ function createInventoryEmbed(target, user) {
   return embed;
 }
 
-function createItemUseEmbed(user, item, gain, power, remaining) {
+function createItemUseEmbed(user, item, gain, power, remaining, evolutionRecord) {
   return new EmbedBuilder()
     .setColor(0x57f287)
-    .setTitle('아이템 강화 성공')
-    .setDescription(`${user}님이 **${item.name}**을 사용했습니다.`)
+    .setTitle('아이템 진화 성공')
+    .setDescription(`${user}님이 **${item.name}**을 사용해 **${evolutionRecord.name} Lv.${evolutionRecord.level}**로 진화했습니다.`)
     .addFields(
       { name: '강화 증가', value: `공격 +${gain.attack} / 방어 +${gain.defense} / 행운 +${gain.luck}`, inline: false },
       { name: '현재 수치', value: `공격 ${power.attack} / 방어 ${power.defense} / 행운 ${power.luck}`, inline: false },
+      { name: '전투 기술', value: `${gain.evolution.attack}\n궁극기: ${gain.evolution.ultimate}`, inline: false },
       { name: '남은 아이템', value: `${remaining}개`, inline: true },
     );
 }
@@ -419,7 +628,7 @@ function createFishingEmbed(stage, payload = {}) {
     bite: {
       color: 0xf1c40f,
       title: '입질 감지',
-      text: '수면 아래에서 무언가 낚싯줄을 잡아당깁니다.',
+      text: '수면 아래에서 무언가 낚싯줄을 강하게 잡아당깁니다.',
       art: [
         '      |',
         '      |   splash',
@@ -431,7 +640,7 @@ function createFishingEmbed(stage, payload = {}) {
     pull: {
       color: 0xe67e22,
       title: '끌어올리는 중',
-      text: '힘을 조절하며 천천히 끌어올립니다.',
+      text: '줄이 끊어지지 않게 힘을 조절하며 천천히 끌어올립니다.',
       art: [
         '     \\|/',
         '      |',
@@ -510,36 +719,61 @@ function simulateBattle(challenge, challengerRecord, opponentRecord) {
   };
   const challengerPower = getUserPower(challengerRecord);
   const opponentPower = getUserPower(opponentRecord);
-  let challengerHp = 90 + challengerPower.defense * 9;
-  let opponentHp = 90 + opponentPower.defense * 9;
+  const challengerStyle = getBattleStyle(challengerRecord);
+  const opponentStyle = getBattleStyle(opponentRecord);
+  let challengerHp = 120 + challengerPower.defense * 10 + challengerStyle.defenseBonus * 4;
+  let opponentHp = 120 + opponentPower.defense * 10 + opponentStyle.defenseBonus * 4;
   const rounds = [];
 
-  for (let round = 1; round <= 3 && challengerHp > 0 && opponentHp > 0; round += 1) {
-    const challengerDamage = Math.max(
-      1,
-      randomInt(10, 24) + challengerPower.attack * 3 + randomInt(0, challengerPower.luck) - opponentPower.defense,
-    );
-    const opponentDamage = Math.max(
-      1,
-      randomInt(10, 24) + opponentPower.attack * 3 + randomInt(0, opponentPower.luck) - challengerPower.defense,
-    );
+  for (let round = 1; round <= 4 && challengerHp > 0 && opponentHp > 0; round += 1) {
+    const challengerMove = resolveBattleMove({
+      attackerId: challenge.challengerId,
+      defenderId: challenge.opponentId,
+      records,
+      attackerPower: challengerPower,
+      defenderPower: opponentPower,
+      attackerStyle: challengerStyle,
+      defenderStyle: opponentStyle,
+      round,
+    });
+    const opponentMove = resolveBattleMove({
+      attackerId: challenge.opponentId,
+      defenderId: challenge.challengerId,
+      records,
+      attackerPower: opponentPower,
+      defenderPower: challengerPower,
+      attackerStyle: opponentStyle,
+      defenderStyle: challengerStyle,
+      round,
+    });
 
-    opponentHp = Math.max(0, opponentHp - challengerDamage);
-    challengerHp = Math.max(0, challengerHp - opponentDamage);
+    opponentHp = Math.max(0, opponentHp - challengerMove.damage);
+    challengerHp = Math.max(0, challengerHp - opponentMove.damage);
     rounds.push({
       round,
-      challengerDamage,
-      opponentDamage,
+      challengerDamage: challengerMove.damage,
+      opponentDamage: opponentMove.damage,
       challengerHp,
       opponentHp,
-      text: `${round}라운드: ${getBattleDisplayName(challenge.challengerId, records)} ${challengerDamage} 피해, ${getBattleDisplayName(challenge.opponentId, records)} ${opponentDamage} 피해`,
+      text: [
+        `${round}라운드`,
+        challengerMove.text,
+        opponentMove.text,
+        `남은 체력: ${getBattleDisplayName(challenge.challengerId, records)} ${challengerHp} / ${getBattleDisplayName(challenge.opponentId, records)} ${opponentHp}`,
+      ].join('\n'),
     });
   }
 
   let winnerId = challengerHp === opponentHp ? null : challengerHp > opponentHp ? challenge.challengerId : challenge.opponentId;
   if (!winnerId) {
-    const challengerTiebreak = getPowerScore(challengerPower) + randomInt(1, 20);
-    const opponentTiebreak = getPowerScore(opponentPower) + randomInt(1, 20);
+    const challengerTiebreak = getPowerScore(challengerPower)
+      + challengerStyle.attackBonus
+      + challengerStyle.luckBonus
+      + randomInt(1, 30);
+    const opponentTiebreak = getPowerScore(opponentPower)
+      + opponentStyle.attackBonus
+      + opponentStyle.luckBonus
+      + randomInt(1, 30);
     winnerId = challengerTiebreak >= opponentTiebreak ? challenge.challengerId : challenge.opponentId;
     rounds.push({
       round: rounds.length + 1,
@@ -547,13 +781,15 @@ function simulateBattle(challenge, challengerRecord, opponentRecord) {
       opponentDamage: 0,
       challengerHp,
       opponentHp,
-      text: `연장 판정: 집중력 싸움 끝에 ${getBattleDisplayName(winnerId, records)}님이 앞섰습니다.`,
+      text: `연장 판정: 진화 숙련도와 집중력 싸움 끝에 ${getBattleDisplayName(winnerId, records)}님이 앞섰습니다.`,
     });
   }
 
   return {
     challengerPower,
     opponentPower,
+    challengerStyle,
+    opponentStyle,
     challengerHp,
     opponentHp,
     rounds,
@@ -574,6 +810,32 @@ function createBattleBroadcastEmbed(challenge, battle, visibleRounds = 0, finalR
   }
 
   const roundLines = battle.rounds.slice(0, visibleRounds).map((round) => round.text);
+  const challengerEvolution = formatEvolutionSummary(
+    {
+      evolutions: Object.fromEntries(
+        battle.challengerStyle.evolutions.map((evolution) => [evolution.key, {
+          itemName: evolution.itemName,
+          name: evolution.name,
+          level: evolution.level,
+          used: evolution.used,
+        }]),
+      ),
+    },
+    3,
+  );
+  const opponentEvolution = formatEvolutionSummary(
+    {
+      evolutions: Object.fromEntries(
+        battle.opponentStyle.evolutions.map((evolution) => [evolution.key, {
+          itemName: evolution.itemName,
+          name: evolution.name,
+          level: evolution.level,
+          used: evolution.used,
+        }]),
+      ),
+    },
+    3,
+  );
   embed.addFields(
     {
       name: '전투력',
@@ -583,8 +845,16 @@ function createBattleBroadcastEmbed(challenge, battle, visibleRounds = 0, finalR
       inline: false,
     },
     {
+      name: '진화 상태',
+      value: truncateText(
+        `<@${challenge.challengerId}>\n${challengerEvolution}\n\n<@${challenge.opponentId}>\n${opponentEvolution}`,
+        1024,
+      ),
+      inline: false,
+    },
+    {
       name: '중계',
-      value: roundLines.length > 0 ? roundLines.join('\n') : '첫 합을 준비하고 있습니다.',
+      value: roundLines.length > 0 ? truncateText(roundLines.join('\n\n'), 1024) : '첫 합을 준비하고 있습니다.',
       inline: false,
     },
   );
@@ -665,7 +935,7 @@ function createBetEmbed(bet) {
   return embed;
 }
 
-function createPolymarketMarketEmbed(market) {
+function createPolymarketMarketEmbed(market, charts = []) {
   const endDate = market.endDate ? getUnixTimestamp(market.endDate) : null;
   const outcomeLines = market.outcomes.map((outcome, index) => {
     const price = market.outcomePrices[index];
@@ -694,6 +964,11 @@ function createPolymarketMarketEmbed(market) {
           `유동성: $${Math.floor(market.liquidity).toLocaleString('en-US')}`,
           endDate ? `종료 예정: <t:${endDate}:R>` : null,
         ].filter(Boolean).join('\n'),
+        inline: false,
+      },
+      {
+        name: '최근 가격 차트',
+        value: formatPolymarketChartField(charts),
         inline: false,
       },
       {
@@ -1261,6 +1536,7 @@ async function createPolymarketBet({ guildId, discordUser, market }) {
         url: market.url,
         endDate: market.endDate,
         outcomePrices: market.outcomePrices,
+        tokenIds: market.tokenIds,
         fetchedAt: new Date().toISOString(),
       },
     };
@@ -1381,6 +1657,7 @@ async function handleUseItem(interaction) {
     user.power.defense += gain.defense;
     user.power.luck += gain.luck;
     user.stats.itemsUsed += 1;
+    const evolutionRecord = applyItemEvolution(user, item, gain.evolution);
 
     const current = user.inventory[item.key];
     if (current && typeof current === 'object') {
@@ -1396,6 +1673,7 @@ async function handleUseItem(interaction) {
       ok: true,
       item,
       gain,
+      evolutionRecord,
       power: getUserPower(user),
       remaining: user.inventory[item.key]?.count || 0,
     };
@@ -1410,7 +1688,16 @@ async function handleUseItem(interaction) {
   }
 
   await reply(interaction, {
-    embeds: [createItemUseEmbed(interaction.user, result.item, result.gain, result.power, result.remaining)],
+    embeds: [
+      createItemUseEmbed(
+        interaction.user,
+        result.item,
+        result.gain,
+        result.power,
+        result.remaining,
+        result.evolutionRecord,
+      ),
+    ],
   });
 }
 
@@ -1556,14 +1843,14 @@ async function handleBattleUiInteraction(interaction) {
     if (challenge.wager > 0 && challengerRecord.balance < challenge.wager) {
       return {
         ok: false,
-        reason: `신청자의 노코인이 부족해서 결투가 취소되었습니다. 현재 잔액: ${formatCoins(challengerRecord.balance)}`,
+        reason: `신청자의 노코인이 부족해서 결투가 취소됬다노. 현재 잔액: ${formatCoins(challengerRecord.balance)}`,
       };
     }
 
     if (challenge.wager > 0 && opponentRecord.balance < challenge.wager) {
       return {
         ok: false,
-        reason: `상대의 노코인이 부족해서 결투가 취소되었습니다. 현재 잔액: ${formatCoins(opponentRecord.balance)}`,
+        reason: `상대의 노코인이 부족해서 결투가 취소됬다노. 현재 잔액: ${formatCoins(opponentRecord.balance)}`,
       };
     }
 
@@ -1714,8 +2001,24 @@ async function handleBetInfo(interaction) {
     return;
   }
 
+  const embeds = [createBetEmbed(bet)];
+  if (bet.source?.type === 'polymarket' && bet.source.marketId) {
+    try {
+      const market = await fetchPolymarketMarket(bet.source.marketId);
+      const charts = await fetchPolymarketPriceCharts(market);
+      embeds.push(createPolymarketMarketEmbed(market, charts));
+    } catch (error) {
+      embeds.push(
+        new EmbedBuilder()
+          .setColor(0xe67e22)
+          .setTitle('Polymarket 차트')
+          .setDescription(`차트를 불러오지 못했습니다: ${error.message}`),
+      );
+    }
+  }
+
   await reply(interaction, {
-    embeds: [createBetEmbed(bet)],
+    embeds,
     components: createBetComponents(bet),
   });
 }
@@ -2030,6 +2333,7 @@ async function handlePolymarketCreate(interaction) {
   await interaction.deferReply();
 
   const market = await fetchPolymarketMarket(marketId);
+  const charts = await fetchPolymarketPriceCharts(market);
   const result = await createPolymarketBet({
     guildId: interaction.guildId,
     discordUser: interaction.user,
@@ -2047,7 +2351,7 @@ async function handlePolymarketCreate(interaction) {
     content: result.created
       ? `Polymarket 시장으로 노코인 베팅 ${result.bet.id}을 만들었습니다.`
       : `이미 열린 노코인 베팅 ${result.bet.id}이 있습니다.`,
-    embeds: [createBetEmbed(result.bet)],
+    embeds: [createBetEmbed(result.bet), createPolymarketMarketEmbed(market, charts)],
     components: createBetComponents(result.bet),
   });
 }
@@ -2060,8 +2364,9 @@ async function handlePolymarketMarketSelect(interaction) {
   const marketId = interaction.values[0];
   await interaction.deferUpdate();
   const market = await fetchPolymarketMarket(marketId);
+  const charts = await fetchPolymarketPriceCharts(market);
   await interaction.editReply({
-    embeds: [createPolymarketMarketEmbed(market)],
+    embeds: [createPolymarketMarketEmbed(market, charts)],
     components: createPolymarketMarketComponents(market),
   });
   return true;
@@ -2075,6 +2380,7 @@ async function handlePolymarketCreateButton(interaction, parsed) {
   const [marketId] = parsed.parts;
   await interaction.deferReply();
   const market = await fetchPolymarketMarket(marketId);
+  const charts = await fetchPolymarketPriceCharts(market);
   const result = await createPolymarketBet({
     guildId: interaction.guildId,
     discordUser: interaction.user,
@@ -2092,7 +2398,7 @@ async function handlePolymarketCreateButton(interaction, parsed) {
     content: result.created
       ? `Polymarket 시장으로 노코인 베팅 ${result.bet.id}을 만들었습니다.`
       : `이미 열린 노코인 베팅 ${result.bet.id}이 있습니다.`,
-    embeds: [createBetEmbed(result.bet)],
+    embeds: [createBetEmbed(result.bet), createPolymarketMarketEmbed(market, charts)],
     components: createBetComponents(result.bet),
   });
   return true;
