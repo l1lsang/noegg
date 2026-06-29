@@ -39,6 +39,12 @@ module.exports = {
   syncScope: (process.env.SYNC_SCOPE || 'guild').toLowerCase(),
   startingBalance: toPositiveInt(process.env.STARTING_BALANCE, 1000),
   fishingCooldownMs: toPositiveInt(process.env.FISHING_COOLDOWN_SECONDS, 300) * 1000,
+  storageBackend: (process.env.STORAGE_BACKEND || 'firestore').toLowerCase(),
+  firestoreProjectId: process.env.FIRESTORE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT,
+  firestoreCollection: process.env.FIRESTORE_COLLECTION || 'nocoinBot',
+  firestoreDocument: process.env.FIRESTORE_DOCUMENT || 'state',
+  firebaseServiceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
+  firebaseServiceAccountBase64: process.env.FIREBASE_SERVICE_ACCOUNT_BASE64,
   dataFile,
   port: process.env.PORT,
 };

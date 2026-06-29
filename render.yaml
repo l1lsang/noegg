@@ -19,9 +19,9 @@ services:
         value: "true"
       - key: SYNC_SCOPE
         value: guild
-      - key: DATA_FILE
-        value: /opt/render/project/src/data/db.json
-    disk:
-      name: nocoin-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
+      - key: STORAGE_BACKEND
+        value: firestore
+      - key: FIRESTORE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false

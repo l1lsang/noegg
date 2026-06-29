@@ -1,6 +1,6 @@
 # 노코인 디스코드 게임봇
 
-노코인으로 베팅하고, 낚시와 구걸로 코인을 얻는 Discord slash command 봇입니다.
+노코인으로 베팅하고, 낚시와 구걸로 코인을 얻는 Discord slash command 봇입니다. 데이터는 Firestore에 저장됩니다.
 
 ## 기능
 
@@ -9,14 +9,17 @@
 - `/베팅종료` 정답 선택지를 정하고 당첨자에게 판돈을 분배합니다.
 - `/베팅목록`, `/베팅정보` 진행 중인 베팅을 확인합니다.
 - `/지갑` 노코인 잔액을 확인합니다.
-- `/낚시`, `/구걸` 쿨타임 기반으로 노코인을 얻습니다.
+- `/낚시` 쿨타임 기반으로 노코인을 얻습니다.
+- `/구걸` 한국시간 기준 하루 1번 노코인을 얻습니다.
+- `/동전던지기`, `/주사위`, `/블랙잭` 노코인 도박 게임을 플레이합니다.
 - `/업데이트` 현재 서버 또는 전역 slash command를 동기화합니다.
 
 ## 로컬 실행
 
 1. Discord Developer Portal에서 Bot을 만들고 토큰을 발급합니다.
-2. `.env.example`을 참고해 `.env`를 만듭니다.
-3. 패키지를 설치하고 명령어를 등록합니다.
+2. Firebase 프로젝트에서 Firestore 데이터베이스를 만들고 서비스 계정 키를 발급합니다.
+3. `.env.example`을 참고해 `.env`를 만듭니다.
+4. 패키지를 설치하고 명령어를 등록합니다.
 
 ```bash
 npm install
@@ -42,8 +45,11 @@ npm.cmd start
 - `DISCORD_CLIENT_ID`: Application ID
 - `DISCORD_GUILD_ID`: 명령어를 빠르게 동기화할 서버 ID
 - `BOT_OWNER_IDS`: `/업데이트` 전역 동기화를 허용할 유저 ID 목록
+- `STORAGE_BACKEND`: `firestore`
+- `FIRESTORE_PROJECT_ID`: Firebase 프로젝트 ID
+- `FIREBASE_SERVICE_ACCOUNT_JSON`: Firebase 서비스 계정 JSON 전체 문자열
 
-코인 데이터는 `DATA_FILE`에 JSON으로 저장됩니다. Render에서 디스크를 붙이지 않으면 재시작 또는 재배포 때 데이터가 사라질 수 있으니, `render.yaml`의 disk 설정을 유지하는 것을 추천합니다.
+Firestore 문서는 기본적으로 `nocoinBot/state`에 저장됩니다. 필요하면 `FIRESTORE_COLLECTION`, `FIRESTORE_DOCUMENT`로 위치를 바꿀 수 있습니다. 로컬 테스트에서만 JSON 파일 저장을 쓰고 싶다면 `STORAGE_BACKEND=json`과 `DATA_FILE=data/db.json`을 설정하세요.
 
 ## Discord 권한
 

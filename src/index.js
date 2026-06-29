@@ -16,7 +16,7 @@ const {
 } = require('discord.js');
 
 const config = require('./config');
-const { JsonStore } = require('./store');
+const { createStore } = require('./store');
 const { syncCommands } = require('./sync-commands');
 const {
   begReward,
@@ -30,7 +30,7 @@ const {
   totalBetPool,
 } = require('./game');
 
-const store = new JsonStore(config.dataFile, config.startingBalance);
+const store = createStore(config);
 const ownerIds = new Set(config.ownerIds);
 const quickBetAmounts = [100, 500, 1000];
 const koreaTimeZone = 'Asia/Seoul';
@@ -399,7 +399,7 @@ function recordGamblingResult(user, outcome, profit, gameType) {
   }
 }
 
-function settleInstantGamble({ guildId, discordUser, wager, multiplier, didWin }) {
+async function settleInstantGamble({ guildId, discordUser, wager, multiplier, didWin }) {
   return store.run((data) => {
     const guild = store.ensureGuild(data, guildId);
     const user = store.ensureUser(guild, discordUser);
@@ -627,7 +627,7 @@ function ensureBet(guild, betId) {
   return guild.bets[String(betId || '').trim().toUpperCase()];
 }
 
-function placeBet({ guildId, discordUser, betId, optionName, optionIndex, amount }) {
+async function placeBet({ guildId, discordUser, betId, optionName, optionIndex, amount }) {
   return store.run((data) => {
     const guild = store.ensureGuild(data, guildId);
     const user = store.ensureUser(guild, discordUser);
@@ -714,7 +714,7 @@ async function handleWallet(interaction) {
   }
 
   const target = interaction.options.getUser('유저') || interaction.user;
-  const result = store.run((data) => {
+  const result = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     const user = store.ensureUser(guild, target);
     return {
@@ -752,7 +752,7 @@ async function handleCreateBet(interaction) {
     return;
   }
 
-  const bet = store.run((data) => {
+  const bet = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     store.ensureUser(guild, interaction.user);
 
@@ -782,7 +782,7 @@ async function handleBetList(interaction) {
     return;
   }
 
-  const openBets = store.run((data) => {
+  const openBets = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     return Object.values(guild.bets)
       .filter((bet) => bet.status === 'open')
@@ -807,7 +807,7 @@ async function handleBetInfo(interaction) {
   }
 
   const betId = interaction.options.getString('베팅id', true);
-  const bet = store.run((data) => {
+  const bet = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     return ensureBet(guild, betId);
   });
@@ -835,7 +835,7 @@ async function handlePlaceBet(interaction) {
   const optionName = interaction.options.getString('선택지', true);
   const amount = interaction.options.getInteger('금액', true);
 
-  const result = placeBet({
+  const result = await placeBet({
     guildId: interaction.guildId,
     discordUser: interaction.user,
     betId,
@@ -864,7 +864,7 @@ async function handleBetListSelect(interaction) {
   }
 
   const betId = interaction.values[0];
-  const bet = store.run((data) => {
+  const bet = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     return ensureBet(guild, betId);
   });
@@ -891,7 +891,7 @@ async function handleBetPickSelect(interaction, parsed) {
 
   const [betId] = parsed.parts;
   const optionIndex = interaction.values[0];
-  const result = store.run((data) => {
+  const result = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     const user = store.ensureUser(guild, interaction.user);
     const bet = ensureBet(guild, betId);
@@ -939,7 +939,7 @@ async function handleBetRefreshButton(interaction, parsed) {
   }
 
   const [betId] = parsed.parts;
-  const bet = store.run((data) => {
+  const bet = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     return ensureBet(guild, betId);
   });
@@ -964,7 +964,7 @@ async function handleBetAmountButton(interaction, parsed) {
   }
 
   const [betId, optionIndex, rawAmount] = parsed.parts;
-  const result = placeBet({
+  const result = await placeBet({
     guildId: interaction.guildId,
     discordUser: interaction.user,
     betId,
@@ -1035,7 +1035,7 @@ async function handleBetModalSubmit(interaction, parsed) {
     return;
   }
 
-  const result = placeBet({
+  const result = await placeBet({
     guildId: interaction.guildId,
     discordUser: interaction.user,
     betId,
@@ -1113,7 +1113,7 @@ async function handleCloseBet(interaction) {
   const betId = interaction.options.getString('베팅id', true);
   const winnerName = interaction.options.getString('정답', true);
 
-  const result = store.run((data) => {
+  const result = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     const bet = ensureBet(guild, betId);
 
@@ -1251,7 +1251,7 @@ async function handleFishing(interaction) {
   }
 
   const now = Date.now();
-  const result = store.run((data) => {
+  const result = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     const user = store.ensureUser(guild, interaction.user);
     const lastUsed = guild.cooldowns.fishing[interaction.user.id] || 0;
@@ -1291,7 +1291,7 @@ async function handleBegging(interaction) {
 
   const now = Date.now();
   const todayKey = getKoreaDayKey(now);
-  const result = store.run((data) => {
+  const result = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     const user = store.ensureUser(guild, interaction.user);
     const migratedDayKey = guild.cooldowns.begging[interaction.user.id]
@@ -1336,7 +1336,7 @@ async function handleCoinFlip(interaction) {
   const wager = interaction.options.getInteger('금액', true);
   const resultFace = Math.random() < 0.5 ? 'heads' : 'tails';
   const didWin = choice === resultFace;
-  const result = settleInstantGamble({
+  const result = await settleInstantGamble({
     guildId: interaction.guildId,
     discordUser: interaction.user,
     wager,
@@ -1382,7 +1382,7 @@ async function handleDice(interaction) {
   const wager = interaction.options.getInteger('금액', true);
   const roll = Math.floor(Math.random() * 6) + 1;
   const didWin = choice === roll;
-  const result = settleInstantGamble({
+  const result = await settleInstantGamble({
     guildId: interaction.guildId,
     discordUser: interaction.user,
     wager,
@@ -1421,7 +1421,7 @@ async function handleBlackjack(interaction) {
   }
 
   const wager = interaction.options.getInteger('금액', true);
-  const result = store.run((data) => {
+  const result = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     const user = store.ensureUser(guild, interaction.user);
     const existingGame = guild.blackjackGames[interaction.user.id];
@@ -1527,7 +1527,7 @@ async function handleBlackjackUiInteraction(interaction) {
     return true;
   }
 
-  const result = store.run((data) => {
+  const result = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     const game = guild.blackjackGames[interaction.user.id];
 

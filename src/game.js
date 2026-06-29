@@ -95,6 +95,9 @@ const FISHING_TABLE = [
   { name: '라마의 휴대폰', min: 220, max: 360, weight: 7 },
   { name: '히나의 비타민칼', min: 180, max: 360, weight: 8 },
   { name: '전설의 피아제 시계', min: 600, max: 1200, weight: 1 },
+  { name: '히나의 전라도 땅크', min: 1500, max: 3000, weight: 0.45 },
+  { name: '노공팔의 GRH 증명 연구', min: 2500, max: 5000, weight: 0.3 },
+  { name: '라마의 잃어버린 부랄', min: 5000, max: 10000, weight: 0.15 },
 ];
 
 const BEGGING_TABLE = [

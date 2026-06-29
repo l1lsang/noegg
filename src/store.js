@@ -1,55 +1,40 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const admin = require('firebase-admin');
 
 const DEFAULT_DATA = {
   version: 1,
   guilds: {},
 };
 
-class JsonStore {
-  constructor(filePath, startingBalance) {
-    this.filePath = filePath;
-    this.startingBalance = startingBalance;
-    this.data = this.load();
+function cloneDefaultData() {
+  return structuredClone(DEFAULT_DATA);
+}
+
+function parseServiceAccount(rawJson, rawBase64) {
+  const raw = rawJson || (rawBase64 ? Buffer.from(rawBase64, 'base64').toString('utf8') : null);
+  if (!raw) {
+    return null;
   }
 
-  load() {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+  const serviceAccount = JSON.parse(raw);
+  if (serviceAccount.private_key) {
+    serviceAccount.private_key = serviceAccount.private_key.replaceAll('\\n', '\n');
+  }
 
-    if (!fs.existsSync(this.filePath)) {
-      return structuredClone(DEFAULT_DATA);
-    }
+  return serviceAccount;
+}
 
-    try {
-      const raw = fs.readFileSync(this.filePath, 'utf8');
-      const parsed = JSON.parse(raw);
-      return this.normalizeData(parsed);
-    } catch (error) {
-      const backupPath = `${this.filePath}.broken-${Date.now()}`;
-      fs.renameSync(this.filePath, backupPath);
-      console.warn(`Data file was invalid. Moved it to ${backupPath}`);
-      return structuredClone(DEFAULT_DATA);
-    }
+class BaseStore {
+  constructor(startingBalance) {
+    this.startingBalance = startingBalance;
   }
 
   normalizeData(data) {
-    const normalized = data && typeof data === 'object' ? data : structuredClone(DEFAULT_DATA);
+    const normalized = data && typeof data === 'object' ? data : cloneDefaultData();
     normalized.version = 1;
     normalized.guilds ||= {};
     return normalized;
-  }
-
-  save() {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    const tempFile = `${this.filePath}.tmp`;
-    fs.writeFileSync(tempFile, JSON.stringify(this.data, null, 2));
-    fs.renameSync(tempFile, this.filePath);
-  }
-
-  run(mutator) {
-    const result = mutator(this.data);
-    this.save();
-    return result;
   }
 
   ensureGuild(data, guildId) {
@@ -125,6 +110,105 @@ class JsonStore {
   }
 }
 
+class JsonStore extends BaseStore {
+  constructor(filePath, startingBalance) {
+    super(startingBalance);
+    this.filePath = filePath;
+    this.data = this.load();
+  }
+
+  load() {
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+
+    if (!fs.existsSync(this.filePath)) {
+      return cloneDefaultData();
+    }
+
+    try {
+      const raw = fs.readFileSync(this.filePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      return this.normalizeData(parsed);
+    } catch (error) {
+      const backupPath = `${this.filePath}.broken-${Date.now()}`;
+      fs.renameSync(this.filePath, backupPath);
+      console.warn(`Data file was invalid. Moved it to ${backupPath}`);
+      return cloneDefaultData();
+    }
+  }
+
+  save() {
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    const tempFile = `${this.filePath}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(this.data, null, 2));
+    fs.renameSync(tempFile, this.filePath);
+  }
+
+  async run(mutator) {
+    const result = mutator(this.data);
+    this.save();
+    return result;
+  }
+}
+
+class FirestoreStore extends BaseStore {
+  constructor(options) {
+    super(options.startingBalance);
+    this.collection = options.collection || 'nocoinBot';
+    this.document = options.document || 'state';
+
+    const serviceAccount = parseServiceAccount(
+      options.serviceAccountJson,
+      options.serviceAccountBase64,
+    );
+    const appOptions = {};
+
+    if (serviceAccount) {
+      appOptions.credential = admin.credential.cert(serviceAccount);
+      appOptions.projectId = options.projectId || serviceAccount.project_id;
+    } else if (options.projectId) {
+      appOptions.projectId = options.projectId;
+    }
+
+    if (!admin.apps.length) {
+      admin.initializeApp(appOptions);
+    }
+
+    this.db = admin.firestore();
+    this.db.settings({ ignoreUndefinedProperties: true });
+    this.docRef = this.db.collection(this.collection).doc(this.document);
+  }
+
+  async run(mutator) {
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(this.docRef);
+      const data = this.normalizeData(snapshot.exists ? snapshot.data() : cloneDefaultData());
+      const result = mutator(data);
+      transaction.set(this.docRef, data);
+      return result;
+    });
+  }
+}
+
+function createStore(config) {
+  const backend = (config.storageBackend || 'firestore').toLowerCase();
+
+  if (backend === 'json') {
+    console.warn('Using JSON data store. Set STORAGE_BACKEND=firestore for Firestore persistence.');
+    return new JsonStore(config.dataFile, config.startingBalance);
+  }
+
+  return new FirestoreStore({
+    startingBalance: config.startingBalance,
+    projectId: config.firestoreProjectId,
+    collection: config.firestoreCollection,
+    document: config.firestoreDocument,
+    serviceAccountJson: config.firebaseServiceAccountJson,
+    serviceAccountBase64: config.firebaseServiceAccountBase64,
+  });
+}
+
 module.exports = {
+  createStore,
+  FirestoreStore,
   JsonStore,
 };
