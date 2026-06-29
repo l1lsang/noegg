@@ -89,6 +89,95 @@ function scaleAmount(amount, multiplier = 1) {
   return Math.max(0, Math.floor(amount * multiplier));
 }
 
+const ITEM_GRADE_CONFIGS = {
+  common: {
+    key: 'common',
+    label: '일반',
+    baseCost: 8000,
+    costGrowth: 0.22,
+    statGain: 1,
+    maxDurability: 70,
+  },
+  uncommon: {
+    key: 'uncommon',
+    label: '고급',
+    baseCost: 15000,
+    costGrowth: 0.28,
+    statGain: 2,
+    maxDurability: 85,
+  },
+  rare: {
+    key: 'rare',
+    label: '희귀',
+    baseCost: 30000,
+    costGrowth: 0.35,
+    statGain: 3,
+    maxDurability: 100,
+  },
+  epic: {
+    key: 'epic',
+    label: '영웅',
+    baseCost: 60000,
+    costGrowth: 0.45,
+    statGain: 5,
+    maxDurability: 120,
+  },
+  legendary: {
+    key: 'legendary',
+    label: '전설',
+    baseCost: 120000,
+    costGrowth: 0.58,
+    statGain: 8,
+    maxDurability: 145,
+  },
+  mythic: {
+    key: 'mythic',
+    label: '신화',
+    baseCost: 250000,
+    costGrowth: 0.75,
+    statGain: 12,
+    maxDurability: 180,
+  },
+};
+const ENHANCEMENT_LEVEL_CHANCES = [
+  0.92,
+  0.84,
+  0.76,
+  0.66,
+  0.55,
+  0.44,
+  0.34,
+  0.25,
+  0.18,
+  0.12,
+  0.08,
+  0.05,
+];
+const PROTECTION_TICKET_CHANCE = 0.001;
+
+function getItemGradeConfig(gradeKey = 'common') {
+  return ITEM_GRADE_CONFIGS[gradeKey] || ITEM_GRADE_CONFIGS.common;
+}
+
+function getItemEnhancementCost(gradeKey, enhanceLevel = 0) {
+  const grade = getItemGradeConfig(gradeKey);
+  const level = Math.max(0, Math.floor(enhanceLevel));
+  return Math.floor(grade.baseCost * (1 + grade.costGrowth * level));
+}
+
+function getItemEnhancementChance(gradeKey, enhanceLevel = 0) {
+  const level = Math.max(0, Math.floor(enhanceLevel));
+  return ENHANCEMENT_LEVEL_CHANCES[Math.min(level, ENHANCEMENT_LEVEL_CHANCES.length - 1)];
+}
+
+function rollItemEnhancement(gradeKey, enhanceLevel = 0) {
+  const chance = getItemEnhancementChance(gradeKey, enhanceLevel);
+  return {
+    chance,
+    success: Math.random() < chance,
+  };
+}
+
 const FISHING_TABLE = [
   { name: '낡은 세냥 양말', min: 5, max: 20, weight: 20 },
   { name: '남랭이 딜도', min: 20, max: 60, weight: 35 },
@@ -107,6 +196,7 @@ const FISHING_TABLE = [
 const ITEM_EVOLUTION_DEFINITIONS = [
   {
     itemName: '낡은 세냥 양말',
+    grade: 'common',
     evolution: '방사능 양말술사',
     stance: '오래 묵은 섬유를 흔들어 공기를 장악합니다.',
     attack: '세냥 암내 살포',
@@ -117,6 +207,7 @@ const ITEM_EVOLUTION_DEFINITIONS = [
   },
   {
     itemName: '남랭이 딜도',
+    grade: 'common',
     evolution: '항문 확장자',
     stance: '딜도를 활용하여 똥꼬를 넓힌다.',
     attack: '강타',
@@ -127,6 +218,7 @@ const ITEM_EVOLUTION_DEFINITIONS = [
   },
   {
     itemName: '쿼카의 상자',
+    grade: 'common',
     evolution: '???',
     stance: '상자 뚜껑 사이로 여러 함정 장치가 번갈아 빛납니다.',
     attack: '세냥 야짤 공개',
@@ -137,36 +229,40 @@ const ITEM_EVOLUTION_DEFINITIONS = [
   },
   {
     itemName: '도라이의 토스 계좌',
+    grade: 'uncommon',
     evolution: '송금 교란자',
-    stance: '알림음이 야동 틀어놓은 핸드폰을 촘촘히 채우며 상대 집중력을 운지시킨다노.',
+    stance: '끊임없는 송금 알림으로 상대 집중력을 흐트러뜨립니다.',
     attack: '1원 알림 폭격',
-    motion: '연속 송금 알림으로 상대의 사정 타이밍을 끊어냅니다.',
+    motion: '연속 송금 알림으로 상대의 리듬을 끊어냅니다.',
     ultimate: '잔액 역전 청구',
-    ultimateMotion: '거대한 청구서가 떨어지며 방어 자세를 강제로 무너뜨립니다.',
+    ultimateMotion: '사채업자를 소환해서 공격하게 한다.',
     statBias: { attack: 1, defense: 0, luck: 4 },
   },
   {
     itemName: '한도 끝난 골탱의 GPT 계정',
+    grade: 'uncommon',
     evolution: '토큰 고갈 백수',
     stance: '느려진 응답창이 상대를 발정시킨다',
     attack: '로딩 지연장',
-    motion: '끝나지 않는 로딩 표시가 상대가 고속사정하게 만든다',
+    motion: '끝나지 않는 로딩 표시가 상대의 판단을 급격히 흔듭니다.',
     ultimate: 'OAI 정책 위반',
     ultimateMotion: '경찰이 투입되어 체포하려고 한다',
     statBias: { attack: 1, defense: 3, luck: 1 },
   },
   {
     itemName: '물에 젖은 라마의 휴대폰',
+    grade: 'rare',
     evolution: '병신',
     stance: '깨진 화면 아래로 물방울과 전류가 동시에 흐릅니다.',
     attack: '젖은 회로 스파크',
-    motion: '휴대폰에서 튄 작은 전류가 상대의 부랄을 찢찢찢.',
+    motion: '휴대폰에서 튄 작은 전류가 상대의 균형을 흔듭니다.',
     ultimate: '수제 EMP 탄',
-    ultimateMotion: '검은 화면이 번쩍이며 주변 장비를 한순간 운지시킴',
+    ultimateMotion: '검은 화면이 번쩍이며 주변 장비를 한순간 마비시킵니다.',
     statBias: { attack: 2, defense: 2, luck: 1 },
   },
   {
     itemName: '초야가 찢은 남랭의 스타킹',
+    grade: 'rare',
     evolution: '남랭이의 맛좀 봐랏',
     stance: '스타킹을 초야에게 팔아서 돈을 모은다',
     attack: '매혹',
@@ -177,6 +273,7 @@ const ITEM_EVOLUTION_DEFINITIONS = [
   },
   {
     itemName: '히나의 비타민칼',
+    grade: 'rare',
     evolution: '폭주 멘헤라',
     stance: '칼날 끝에서 선명한 피가 맺힌다',
     attack: '검술',
@@ -187,16 +284,18 @@ const ITEM_EVOLUTION_DEFINITIONS = [
   },
   {
     itemName: '전설의 피아제 시계',
+    grade: 'epic',
     evolution: '중력 마스터',
     stance: '확 올라갔다 확 내려간다',
     attack: '밀치기',
     motion: '상대를 논두령으로 밀어버린다',
-    ultimate: '운지',
-    ultimateMotion: '중력을 없애서 고속 상승했다가 중력을 6배로 늘려서 초고속 운지를 시킨다.',
+    ultimate: '중력 낙하',
+    ultimateMotion: '중력을 없애 고속 상승한 뒤 압도적인 낙하 충격을 일으킵니다.',
     statBias: { attack: 3, defense: 2, luck: 3 },
   },
   {
     itemName: '히나의 전라도 땅크',
+    grade: 'legendary',
     evolution: '두환이의 뒤를 잇는다',
     stance: '무거운 궤도음이 깔리며 히나의 집 앞으로 향한다',
     attack: '돌진',
@@ -207,6 +306,7 @@ const ITEM_EVOLUTION_DEFINITIONS = [
   },
   {
     itemName: '노공팔의 GRH 증명 연구',
+    grade: 'legendary',
     evolution: '여긴 어디 나는 누구',
     stance: '복잡한 수식이 발밑에 펼쳐져 상대의 지능을 퇴화시킨다',
     attack: '정리 전개',
@@ -217,12 +317,13 @@ const ITEM_EVOLUTION_DEFINITIONS = [
   },
   {
     itemName: '라마의 잃어버린 부랄',
+    grade: 'mythic',
     evolution: '유전자 조작자',
     stance: '존재하지 않는 것을 가진 자.',
     attack: '콩알탄',
-    motion: '복제된 라마 부랄을 흩뿌리며 상대에게 공포를 안김',
+    motion: '복제된 잔상을 흩뿌리며 상대에게 공포를 안깁니다.',
     ultimate: '중성화',
-    ultimateMotion: '상대 부랄을 삭제시키며 덜렁덜렁 거리는 아랫도리를 발로 걷어찬다',
+    ultimateMotion: '상대의 중심을 무너뜨린 뒤 강한 발차기로 전장을 뒤흔듭니다.',
     statBias: { attack: 4, defense: 2, luck: 1 },
   },
 ];
@@ -239,6 +340,18 @@ const BEGGING_TABLE = [
 ];
 
 function fishReward(multiplier = 1) {
+  if (Math.random() < PROTECTION_TICKET_CHANCE) {
+    return {
+      label: '강화 방지권',
+      amount: 0,
+      baseAmount: 0,
+      weight: 0,
+      type: 'protection_ticket',
+      protectionTicket: true,
+      chance: PROTECTION_TICKET_CHANCE,
+    };
+  }
+
   const picked = weightedPick(FISHING_TABLE);
   const baseAmount = randomInt(picked.min, picked.max);
   return {
@@ -270,6 +383,7 @@ function getItemEvolution(itemName) {
     motion: '아이템의 무게를 이용해 정면으로 밀어붙입니다.',
     ultimate: '노코인 폭발',
     ultimateMotion: '모은 기운을 한 번에 터뜨립니다.',
+    grade: 'common',
     statBias: { attack: 1, defense: 1, luck: 1 },
   };
 }
@@ -284,12 +398,16 @@ module.exports = {
   fishReward,
   formatCoins,
   formatRemaining,
+  getItemEnhancementChance,
+  getItemEnhancementCost,
   getItemEvolution,
+  getItemGradeConfig,
   listItemEvolutions,
   nextBetId,
   normalizeKey,
   optionPools,
   parseOptions,
   randomInt,
+  rollItemEnhancement,
   totalBetPool,
 };

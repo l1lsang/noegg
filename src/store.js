@@ -94,9 +94,16 @@ class BaseStore {
         battlesLost: 0,
         battleProfit: 0,
         itemsUsed: 0,
+        itemEnhanceAttempts: 0,
+        itemEnhanceSuccesses: 0,
+        itemEnhanceSpent: 0,
+        protectionTicketsFound: 0,
+        protectionTicketsUsed: 0,
+        grantsReceived: 0,
       },
       inventory: {},
       evolutions: {},
+      protectionTickets: 0,
       power: {
         attack: 1,
         defense: 1,
@@ -123,8 +130,15 @@ class BaseStore {
     record.stats.battlesLost ||= 0;
     record.stats.battleProfit ||= 0;
     record.stats.itemsUsed ||= 0;
+    record.stats.itemEnhanceAttempts ||= 0;
+    record.stats.itemEnhanceSuccesses ||= 0;
+    record.stats.itemEnhanceSpent ||= 0;
+    record.stats.protectionTicketsFound ||= 0;
+    record.stats.protectionTicketsUsed ||= 0;
+    record.stats.grantsReceived ||= 0;
     record.inventory = record.inventory && typeof record.inventory === 'object' ? record.inventory : {};
     record.evolutions = record.evolutions && typeof record.evolutions === 'object' ? record.evolutions : {};
+    record.protectionTickets = Number.isFinite(record.protectionTickets) ? Math.max(0, Math.floor(record.protectionTickets)) : 0;
     record.power = record.power && typeof record.power === 'object' ? record.power : {};
     record.power.attack = Number.isFinite(record.power.attack) ? Math.max(1, Math.floor(record.power.attack)) : 1;
     record.power.defense = Number.isFinite(record.power.defense) ? Math.max(1, Math.floor(record.power.defense)) : 1;

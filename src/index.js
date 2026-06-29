@@ -31,12 +31,16 @@ const {
   fishReward,
   formatCoins,
   formatRemaining,
+  getItemEnhancementChance,
+  getItemEnhancementCost,
   getItemEvolution,
+  getItemGradeConfig,
   nextBetId,
   normalizeKey,
   optionPools,
   parseOptions,
   randomInt,
+  rollItemEnhancement,
   totalBetPool,
 } = require('./game');
 
@@ -49,6 +53,9 @@ const blackjackSuits = ['♠', '♥', '♦', '♣'];
 const blackjackRanks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 const battleChallenges = new Map();
 const battleChallengeTtlMs = 5 * 60 * 1000;
+const battleSessions = new Map();
+const battleSessionTtlMs = 20 * 60 * 1000;
+const battleMaxTurns = 12;
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -250,8 +257,59 @@ function progressBar(value, total, size = 12) {
     return '░'.repeat(size);
   }
 
-  const filled = Math.max(1, Math.round((value / total) * size));
+  const filled = Math.min(size, Math.max(1, Math.round((value / total) * size)));
   return `${'█'.repeat(filled)}${'░'.repeat(size - filled)}`;
+}
+
+const uiTheme = {
+  footer: '노코인 게임봇',
+  colors: {
+    primary: 0x5865f2,
+    success: 0x57f287,
+    danger: 0xed4245,
+    warning: 0xfee75c,
+    muted: 0x95a5a6,
+    economy: 0xf1c40f,
+    inventory: 0x3498db,
+    battle: 0xed4245,
+    market: 0x27ae60,
+  },
+};
+
+function createUiEmbed({ title, description, color = uiTheme.colors.primary } = {}) {
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setFooter({ text: uiTheme.footer })
+    .setTimestamp();
+
+  if (title) {
+    embed.setTitle(title);
+  }
+
+  if (description) {
+    embed.setDescription(description);
+  }
+
+  return embed;
+}
+
+function formatStatLine(power) {
+  return `공격 ${power.attack} / 방어 ${power.defense} / 행운 ${power.luck}`;
+}
+
+function formatDurabilityLine(current, max, size = 10) {
+  const safeCurrent = Math.max(0, Math.floor(current || 0));
+  const safeMax = Math.max(1, Math.floor(max || 1));
+  const label = safeCurrent <= 0 ? '파손' : safeCurrent <= Math.ceil(safeMax * 0.25) ? '위험' : '정상';
+  return `${progressBar(safeCurrent, safeMax, size)} ${safeCurrent}/${safeMax} (${label})`;
+}
+
+function formatCommandList(commands) {
+  return commands.map(([name, text]) => `\`${name}\` ${text}`).join('\n');
+}
+
+function getDisplayName(target, user = {}) {
+  return target.globalName || target.username || user.displayName || user.username || target.id;
 }
 
 function sampleValues(values, maxPoints) {
@@ -372,8 +430,8 @@ function parsePolymarketCustomId(customId) {
   };
 }
 
-function battleCustomId(action, challengeId) {
-  return ['battle', action, challengeId].join(':');
+function battleCustomId(action, challengeId, ...parts) {
+  return ['battle', action, challengeId, ...parts].join(':');
 }
 
 function parseBattleCustomId(customId) {
@@ -385,6 +443,7 @@ function parseBattleCustomId(customId) {
   return {
     action: parts[1],
     challengeId: parts[2],
+    parts: parts.slice(3),
   };
 }
 
@@ -412,6 +471,20 @@ function getBattleChallenge(challengeId, guildId) {
   return challenge;
 }
 
+function getBattleSession(sessionId, guildId) {
+  const session = battleSessions.get(sessionId);
+  if (!session || session.guildId !== guildId) {
+    return null;
+  }
+
+  if (Date.now() - session.updatedAt > battleSessionTtlMs) {
+    battleSessions.delete(sessionId);
+    return null;
+  }
+
+  return session;
+}
+
 function getUserPower(user) {
   const power = user.power && typeof user.power === 'object' ? user.power : {};
   return {
@@ -434,6 +507,10 @@ function getEvolutionStatBias(evolution) {
   };
 }
 
+function formatChance(chance) {
+  return `${Math.round(chance * 1000) / 10}%`;
+}
+
 function getUserEvolutions(user) {
   const evolutions = user.evolutions && typeof user.evolutions === 'object' ? user.evolutions : {};
   return Object.entries(evolutions)
@@ -441,17 +518,35 @@ function getUserEvolutions(user) {
       const record = rawEvolution && typeof rawEvolution === 'object' ? rawEvolution : {};
       const itemName = record.itemName || key;
       const definition = getItemEvolution(itemName);
+      const grade = getItemGradeConfig(record.grade || definition.grade);
+      const maxDurability = Number.isFinite(record.maxDurability)
+        ? Math.max(1, Math.floor(record.maxDurability))
+        : grade.maxDurability;
+      const durability = Number.isFinite(record.durability)
+        ? Math.max(0, Math.min(maxDurability, Math.floor(record.durability)))
+        : maxDurability;
+      const enhanceLevel = Number.isFinite(record.enhanceLevel)
+        ? Math.max(0, Math.floor(record.enhanceLevel))
+        : 0;
       return {
         key,
         itemName,
         name: record.name || definition.evolution,
         level: Number.isFinite(record.level) ? Math.max(1, Math.floor(record.level)) : 1,
+        enhanceLevel,
         used: Number.isFinite(record.used) ? Math.max(1, Math.floor(record.used)) : 1,
         lastUsedAt: record.lastUsedAt || null,
+        grade,
+        durability,
+        maxDurability,
         definition,
       };
     })
-    .sort((a, b) => b.level - a.level || b.used - a.used || a.name.localeCompare(b.name, 'ko-KR'));
+    .sort((a, b) =>
+      (b.level + b.enhanceLevel) - (a.level + a.enhanceLevel)
+      || b.used - a.used
+      || a.name.localeCompare(b.name, 'ko-KR')
+    );
 }
 
 function getBattleStyle(user) {
@@ -459,7 +554,7 @@ function getBattleStyle(user) {
   const totals = evolutions.reduce(
     (sum, evolution) => {
       const bias = getEvolutionStatBias(evolution.definition);
-      const levelWeight = Math.max(1, evolution.level);
+      const levelWeight = Math.max(1, evolution.level + evolution.enhanceLevel);
       sum.attack += bias.attack * levelWeight;
       sum.defense += bias.defense * levelWeight;
       sum.luck += bias.luck * levelWeight;
@@ -469,7 +564,7 @@ function getBattleStyle(user) {
   );
 
   return {
-    evolutions,
+    evolutions: evolutions.filter((evolution) => evolution.durability > 0),
     attackBonus: Math.min(40, totals.attack),
     defenseBonus: Math.min(40, totals.defense),
     luckBonus: Math.min(40, totals.luck),
@@ -484,7 +579,12 @@ function formatEvolutionSummary(user, maxItems = 4) {
 
   return evolutions
     .slice(0, maxItems)
-    .map((evolution) => `${evolution.name} Lv.${evolution.level} (${evolution.itemName})`)
+    .map((evolution) => {
+      const enhanceText = evolution.enhanceLevel > 0 ? ` +${evolution.enhanceLevel}` : '';
+      const nextCost = getItemEnhancementCost(evolution.grade.key, evolution.enhanceLevel);
+      const nextChance = getItemEnhancementChance(evolution.grade.key, evolution.enhanceLevel);
+      return `[${evolution.grade.label}] ${evolution.name} Lv.${evolution.level}${enhanceText} (${evolution.itemName}) · 내구도 ${evolution.durability}/${evolution.maxDurability} · 다음 ${formatCoins(nextCost)} / ${formatChance(nextChance)}`;
+    })
     .join('\n');
 }
 
@@ -524,7 +624,7 @@ function resolveBattleMove({
   const attackName = shouldUltimate ? definition.ultimate : definition.attack;
   const motion = shouldUltimate ? definition.ultimateMotion : definition.motion;
   const baseDamage = randomInt(12, 28);
-  const evolutionLevel = Math.max(1, evolution.level || 1);
+  const evolutionLevel = Math.max(1, (evolution.level || 1) + (evolution.enhanceLevel || 0));
   const rawDamage = baseDamage
     + attackerPower.attack * 3
     + attackerStyle.attackBonus
@@ -537,12 +637,319 @@ function resolveBattleMove({
     damage,
     isUltimate: shouldUltimate,
     text: [
-      `${getBattleDisplayName(attackerId, records)} [${evolution.name} Lv.${evolutionLevel}]`,
+      `${getBattleDisplayName(attackerId, records)} [${evolution.grade?.label || '일반'} ${evolution.name} Lv.${evolutionLevel}]`,
       `${shouldUltimate ? '궁극기' : '기술'}: ${attackName}`,
       `${motion}`,
       `<@${defenderId}>에게 ${damage} 피해`,
     ].join('\n'),
   };
+}
+
+function createBattleSession(challenge, challengerRecord, opponentRecord) {
+  const challengerPower = getUserPower(challengerRecord);
+  const opponentPower = getUserPower(opponentRecord);
+  const challengerStyle = getBattleStyle(challengerRecord);
+  const opponentStyle = getBattleStyle(opponentRecord);
+  const challengerMaxHp = 120 + challengerPower.defense * 10 + challengerStyle.defenseBonus * 4;
+  const opponentMaxHp = 120 + opponentPower.defense * 10 + opponentStyle.defenseBonus * 4;
+  const firstUserId = (challengerPower.luck + challengerStyle.luckBonus) >= (opponentPower.luck + opponentStyle.luckBonus)
+    ? challenge.challengerId
+    : challenge.opponentId;
+  const now = Date.now();
+
+  return {
+    id: challenge.id,
+    guildId: challenge.guildId,
+    channelId: challenge.channelId,
+    challengerId: challenge.challengerId,
+    opponentId: challenge.opponentId,
+    wager: challenge.wager,
+    createdAt: now,
+    updatedAt: now,
+    status: 'active',
+    turnUserId: firstUserId,
+    turnNumber: 1,
+    hp: {
+      [challenge.challengerId]: challengerMaxHp,
+      [challenge.opponentId]: opponentMaxHp,
+    },
+    maxHp: {
+      [challenge.challengerId]: challengerMaxHp,
+      [challenge.opponentId]: opponentMaxHp,
+    },
+    powers: {
+      [challenge.challengerId]: challengerPower,
+      [challenge.opponentId]: opponentPower,
+    },
+    styles: {
+      [challenge.challengerId]: challengerStyle,
+      [challenge.opponentId]: opponentStyle,
+    },
+    records: {
+      [challenge.challengerId]: challengerRecord,
+      [challenge.opponentId]: opponentRecord,
+    },
+    shields: {
+      [challenge.challengerId]: 0,
+      [challenge.opponentId]: 0,
+    },
+    ultimateUsed: {
+      [challenge.challengerId]: false,
+      [challenge.opponentId]: false,
+    },
+    log: [
+      `결투가 시작되었습니다. ${getBattleDisplayName(firstUserId, {
+        [challenge.challengerId]: challengerRecord,
+        [challenge.opponentId]: opponentRecord,
+      })}님이 먼저 움직입니다.`,
+    ],
+  };
+}
+
+function getBattleOpponentId(session, userId) {
+  return userId === session.challengerId ? session.opponentId : session.challengerId;
+}
+
+function getSessionEvolutionSummary(style, maxItems = 2) {
+  if (!style?.evolutions?.length) {
+    return '맨몸 도전자';
+  }
+
+  return style.evolutions
+    .slice(0, maxItems)
+    .map((evolution) => {
+      const enhanceText = evolution.enhanceLevel > 0 ? ` +${evolution.enhanceLevel}` : '';
+      return `[${evolution.grade.label}] ${evolution.name} Lv.${evolution.level}${enhanceText} 내구도 ${evolution.durability}/${evolution.maxDurability}`;
+    })
+    .join(', ');
+}
+
+function createBattleHpLine(session, userId) {
+  const hp = Math.max(0, Math.floor(session.hp[userId] || 0));
+  const maxHp = Math.max(1, Math.floor(session.maxHp[userId] || 1));
+  const shield = Math.max(0, Math.floor(session.shields[userId] || 0));
+  const shieldText = shield > 0 ? ` / 방어막 ${shield}` : '';
+  return `<@${userId}> ${progressBar(hp, maxHp, 10)} ${hp}/${maxHp}${shieldText}`;
+}
+
+function resolveBattleAction(session, actorId, action) {
+  const defenderId = getBattleOpponentId(session, actorId);
+  const records = session.records;
+  const actorPower = session.powers[actorId];
+  const defenderPower = session.powers[defenderId];
+  const actorStyle = session.styles[actorId];
+  const defenderStyle = session.styles[defenderId];
+  const round = Math.max(1, Math.ceil(session.turnNumber / 2));
+
+  if (action === 'guard') {
+    const guardAmount = 12 + actorPower.defense * 3 + actorStyle.defenseBonus * 2 + randomInt(0, Math.max(2, actorPower.luck));
+    session.shields[actorId] = Math.min(999, (session.shields[actorId] || 0) + guardAmount);
+    return `${getBattleDisplayName(actorId, records)}님이 방어 자세를 잡았습니다. 다음 피해를 ${guardAmount}만큼 흡수합니다.`;
+  }
+
+  const luckRoll = randomInt(0, Math.max(1, actorPower.luck + actorStyle.luckBonus));
+  const evolution = pickBattleEvolution(actorStyle, round - 1, luckRoll);
+  const definition = evolution.definition;
+  const isUltimate = action === 'ultimate';
+
+  if (isUltimate && session.ultimateUsed[actorId]) {
+    return `${getBattleDisplayName(actorId, records)}님은 이미 궁극기를 사용했습니다. 짧은 견제로 턴을 넘깁니다.`;
+  }
+
+  const actionConfig = {
+    attack: {
+      label: '기본 공격',
+      baseMin: 10,
+      baseMax: 20,
+      multiplier: 0.85,
+      bonus: 0,
+      name: definition.attack,
+      motion: definition.motion,
+    },
+    skill: {
+      label: '기술',
+      baseMin: 14,
+      baseMax: 30,
+      multiplier: 1.1,
+      bonus: 4,
+      name: definition.attack,
+      motion: definition.motion,
+    },
+    ultimate: {
+      label: '궁극기',
+      baseMin: 24,
+      baseMax: 45,
+      multiplier: 1.65,
+      bonus: 14,
+      name: definition.ultimate,
+      motion: definition.ultimateMotion,
+    },
+  }[action] || {
+    label: '기본 공격',
+    baseMin: 10,
+    baseMax: 20,
+    multiplier: 0.85,
+    bonus: 0,
+    name: definition.attack,
+    motion: definition.motion,
+  };
+
+  const evolutionLevel = Math.max(1, (evolution.level || 1) + (evolution.enhanceLevel || 0));
+  const rawDamage = randomInt(actionConfig.baseMin, actionConfig.baseMax)
+    + actorPower.attack * 3
+    + actorStyle.attackBonus
+    + evolutionLevel * (isUltimate ? 5 : 2)
+    + luckRoll
+    + actionConfig.bonus;
+  const mitigation = Math.floor((defenderPower.defense * 1.4) + (defenderStyle.defenseBonus * 0.7));
+  const beforeShieldDamage = Math.max(1, Math.floor(rawDamage * actionConfig.multiplier) - mitigation);
+  const shield = Math.max(0, Math.floor(session.shields[defenderId] || 0));
+  const shieldUsed = Math.min(shield, beforeShieldDamage);
+  const damage = Math.max(0, beforeShieldDamage - shieldUsed);
+
+  session.shields[defenderId] = Math.max(0, shield - shieldUsed);
+  session.hp[defenderId] = Math.max(0, Math.floor(session.hp[defenderId] || 0) - damage);
+  if (isUltimate) {
+    session.ultimateUsed[actorId] = true;
+  }
+
+  const shieldText = shieldUsed > 0 ? ` 방어막이 ${shieldUsed} 피해를 흡수했습니다.` : '';
+  return [
+    `${getBattleDisplayName(actorId, records)} [${evolution.grade?.label || '일반'} ${evolution.name} Lv.${evolutionLevel}]`,
+    `${actionConfig.label}: ${actionConfig.name}`,
+    actionConfig.motion,
+    `<@${defenderId}>에게 ${damage} 피해.${shieldText}`,
+  ].join('\n');
+}
+
+function finishBattleSession(session) {
+  if (session.hp[session.challengerId] === session.hp[session.opponentId]) {
+    const challengerScore = getPowerScore(session.powers[session.challengerId])
+      + session.styles[session.challengerId].luckBonus
+      + randomInt(1, 30);
+    const opponentScore = getPowerScore(session.powers[session.opponentId])
+      + session.styles[session.opponentId].luckBonus
+      + randomInt(1, 30);
+    session.winnerId = challengerScore >= opponentScore ? session.challengerId : session.opponentId;
+  } else {
+    session.winnerId = session.hp[session.challengerId] > session.hp[session.opponentId]
+      ? session.challengerId
+      : session.opponentId;
+  }
+
+  session.loserId = getBattleOpponentId(session, session.winnerId);
+  session.status = 'finished';
+  session.updatedAt = Date.now();
+  battleSessions.delete(session.id);
+  return session;
+}
+
+function advanceBattleTurn(session, actorId, action) {
+  const resultText = resolveBattleAction(session, actorId, action);
+  const defenderId = getBattleOpponentId(session, actorId);
+  session.log.push(resultText);
+  session.updatedAt = Date.now();
+
+  if (session.hp[defenderId] <= 0 || session.turnNumber >= battleMaxTurns) {
+    return finishBattleSession(session);
+  }
+
+  session.turnUserId = defenderId;
+  session.turnNumber += 1;
+  return session;
+}
+
+function createBattleTurnEmbed(session, finalResult = null) {
+  const isFinished = session.status === 'finished' || finalResult;
+  const embed = createUiEmbed({
+    color: isFinished ? uiTheme.colors.success : uiTheme.colors.battle,
+    title: isFinished ? '결투 종료' : `턴제 결투 ${session.turnNumber}/${battleMaxTurns}`,
+    description: [
+      `<@${session.challengerId}> vs <@${session.opponentId}>`,
+      session.wager > 0 ? `판돈 ${formatCoins(session.wager)}씩 / 총 ${formatCoins(session.wager * 2)}` : '판돈 없음',
+    ].join('\n'),
+  });
+
+  embed.addFields(
+    {
+      name: '체력',
+      value: [
+        createBattleHpLine(session, session.challengerId),
+        createBattleHpLine(session, session.opponentId),
+      ].join('\n'),
+      inline: false,
+    },
+    {
+      name: '전투 스타일',
+      value: [
+        `<@${session.challengerId}> ${getSessionEvolutionSummary(session.styles[session.challengerId])}`,
+        `<@${session.opponentId}> ${getSessionEvolutionSummary(session.styles[session.opponentId])}`,
+      ].join('\n\n'),
+      inline: false,
+    },
+    {
+      name: isFinished ? '결과' : '현재 턴',
+      value: isFinished
+        ? `<@${finalResult?.winnerId || session.winnerId}> 승리${session.wager > 0 ? ` / 상금 ${formatCoins(finalResult?.payout || session.wager * 2)}` : ''}`
+        : `<@${session.turnUserId}>님이 행동을 선택할 차례입니다.`,
+      inline: false,
+    },
+    {
+      name: '중계 로그',
+      value: truncateText(session.log.slice(-5).join('\n\n'), 1024),
+      inline: false,
+    },
+  );
+
+  if (!isFinished) {
+    embed.addFields({
+      name: '행동 버튼',
+      value: '공격: 안정적 피해 / 기술: 높은 피해 / 궁극기: 1회 사용 / 방어: 보호막 생성',
+      inline: false,
+    });
+  }
+
+  if (isFinished && finalResult?.durabilityLoss) {
+    embed.addFields({
+      name: '내구도 감소',
+      value: [
+        `<@${finalResult.winnerId}> 아이템 ${finalResult.durabilityLoss.winnerItemsChanged}개 -${finalResult.durabilityLoss.winner}`,
+        `<@${finalResult.loserId}> 아이템 ${finalResult.durabilityLoss.loserItemsChanged}개 -${finalResult.durabilityLoss.loser}`,
+      ].join('\n'),
+      inline: false,
+    });
+  }
+
+  return embed;
+}
+
+function createBattleTurnComponents(session) {
+  if (session.status !== 'active') {
+    return [];
+  }
+
+  const ultimateDisabled = Boolean(session.ultimateUsed[session.turnUserId]);
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(battleCustomId('move', session.id, 'attack'))
+        .setLabel('기본 공격')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(battleCustomId('move', session.id, 'skill'))
+        .setLabel('전투 기술')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(battleCustomId('move', session.id, 'ultimate'))
+        .setLabel('궁극기')
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(ultimateDisabled),
+      new ButtonBuilder()
+        .setCustomId(battleCustomId('move', session.id, 'guard'))
+        .setLabel('방어 태세')
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
 }
 
 function getInventoryItems(user) {
@@ -633,11 +1040,23 @@ function applyItemEvolution(user, item, evolution) {
     ? user.evolutions[item.key]
     : {};
   const level = Math.max(0, Math.floor(current.level || 0)) + 1;
+  const enhanceLevel = Number.isFinite(current.enhanceLevel) ? Math.max(0, Math.floor(current.enhanceLevel)) : 0;
+  const grade = getItemGradeConfig(evolution.grade);
+  const maxDurability = Number.isFinite(current.maxDurability)
+    ? Math.max(1, Math.floor(current.maxDurability))
+    : grade.maxDurability;
 
   user.evolutions[item.key] = {
     itemName: item.name,
     name: evolution.evolution,
+    grade: grade.key,
     level,
+    enhanceLevel,
+    durability: maxDurability,
+    maxDurability,
+    enhanceAttempts: Math.max(0, Math.floor(current.enhanceAttempts || 0)),
+    enhanceSuccesses: Math.max(0, Math.floor(current.enhanceSuccesses || 0)),
+    enhancePowerBonus: current.enhancePowerBonus || { attack: 0, defense: 0, luck: 0 },
     used: Math.max(0, Math.floor(current.used || 0)) + 1,
     attack: evolution.attack,
     ultimate: evolution.ultimate,
@@ -647,63 +1066,263 @@ function applyItemEvolution(user, item, evolution) {
   return user.evolutions[item.key];
 }
 
+function findUserEvolution(user, rawName) {
+  const wanted = normalizeKey(rawName);
+  return getUserEvolutions(user).find((evolution) =>
+    evolution.key === wanted
+    || normalizeKey(evolution.itemName) === wanted
+    || normalizeKey(evolution.name) === wanted
+  );
+}
+
+function getEnhancementPowerGain(evolution) {
+  const bias = getEvolutionStatBias(evolution.definition);
+  const grade = evolution.grade?.key
+    ? evolution.grade
+    : getItemGradeConfig(evolution.grade || evolution.definition?.grade);
+  const gain = {
+    attack: Math.max(0, bias.attack) * grade.statGain,
+    defense: Math.max(0, bias.defense) * grade.statGain,
+    luck: Math.max(0, bias.luck) * grade.statGain,
+  };
+
+  if (gain.attack + gain.defense + gain.luck <= 0) {
+    gain.attack = grade.statGain;
+  }
+
+  return gain;
+}
+
+function subtractPower(user, powerBonus = {}) {
+  user.power.attack = Math.max(1, Math.floor((user.power.attack || 1) - (powerBonus.attack || 0)));
+  user.power.defense = Math.max(1, Math.floor((user.power.defense || 1) - (powerBonus.defense || 0)));
+  user.power.luck = Math.max(1, Math.floor((user.power.luck || 1) - (powerBonus.luck || 0)));
+}
+
+function applyBattleDurabilityLoss(user, amount) {
+  const evolutions = user.evolutions && typeof user.evolutions === 'object' ? user.evolutions : {};
+  let changed = 0;
+
+  for (const record of Object.values(evolutions)) {
+    if (!record || typeof record !== 'object') {
+      continue;
+    }
+
+    const definition = getItemEvolution(record.itemName);
+    const grade = getItemGradeConfig(record.grade || definition.grade);
+    record.maxDurability = Number.isFinite(record.maxDurability)
+      ? Math.max(1, Math.floor(record.maxDurability))
+      : grade.maxDurability;
+    record.durability = Number.isFinite(record.durability)
+      ? Math.max(0, Math.floor(record.durability))
+      : record.maxDurability;
+    const nextDurability = Math.max(0, record.durability - amount);
+    if (nextDurability !== record.durability) {
+      changed += 1;
+    }
+    record.durability = nextDurability;
+  }
+
+  return changed;
+}
+
 function createInventoryEmbed(target, user) {
   const items = getInventoryItems(user);
   const power = getUserPower(user);
-  const displayName = target.globalName || target.username || user.displayName || user.username || target.id;
+  const stats = user.stats || {};
+  const displayName = getDisplayName(target, user);
+  const totalCount = items.reduce((sum, item) => sum + item.count, 0);
   const itemLines = items.length > 0
     ? items.slice(0, 12).map((item, index) => {
+      const grade = getItemGradeConfig(getItemEvolution(item.name).grade);
       const valueText = item.bestValue > 0 ? `최고 ${formatCoins(item.bestValue)}` : '가치 미기록';
-      return `${index + 1}. ${item.name} x${item.count} (${valueText})`;
+      return `${index + 1}. [${grade.label}] ${item.name} x${item.count} · ${valueText}`;
     }).join('\n')
     : '아직 보관함이 비어 있습니다. `/낚시`로 첫 아이템을 잡아보세요.';
 
-  const embed = new EmbedBuilder()
-    .setColor(0x3498db)
-    .setTitle(`${displayName}님의 보관함`)
-    .setDescription(itemLines)
+  const embed = createUiEmbed({
+    color: uiTheme.colors.inventory,
+    title: `${displayName}님의 보관함`,
+    description: `총 ${items.length}종 / ${totalCount}개 보유`,
+  })
     .addFields(
       {
-        name: '강화 수치',
-        value: `공격 ${power.attack} / 방어 ${power.defense} / 행운 ${power.luck}`,
+        name: '낚시 아이템',
+        value: truncateText(itemLines, 1024),
+        inline: false,
+      },
+      {
+        name: '성장 요약',
+        value: [
+          `능력치: ${formatStatLine(power)}`,
+          `방지권: ${user.protectionTickets || 0}장`,
+          `아이템 사용: ${stats.itemsUsed || 0}회`,
+        ].join('\n'),
         inline: false,
       },
       {
         name: '진화',
-        value: formatEvolutionSummary(user),
+        value: truncateText(formatEvolutionSummary(user, 5), 1024),
         inline: false,
       },
       {
-        name: '결투 기록',
-        value: `${user.stats?.battlesWon || 0}승 ${user.stats?.battlesLost || 0}패 / 수익 ${formatCoins(user.stats?.battleProfit || 0)}`,
-        inline: false,
+        name: '전투 기록',
+        value: `${stats.battlesWon || 0}승 ${stats.battlesLost || 0}패 / 수익 ${formatCoins(stats.battleProfit || 0)}`,
+        inline: true,
+      },
+      {
+        name: '강화 기록',
+        value: `${stats.itemEnhanceSuccesses || 0}/${stats.itemEnhanceAttempts || 0} 성공 / 사용 ${formatCoins(stats.itemEnhanceSpent || 0)}`,
+        inline: true,
       },
     );
 
   if (items.length > 12) {
-    embed.setFooter({ text: `총 ${items.length}종 중 가치 높은 12종만 표시됩니다.` });
+    embed.setFooter({ text: `${uiTheme.footer} · 총 ${items.length}종 중 가치 높은 12종 표시` });
   }
 
   return embed;
 }
 
-function createItemUseEmbed(user, item, gain, power, remaining, evolutionRecord) {
-  return new EmbedBuilder()
-    .setColor(0x57f287)
-    .setTitle('아이템 진화 성공')
-    .setDescription(`${user}님이 **${item.name}**을 사용해 **${evolutionRecord.name} Lv.${evolutionRecord.level}**로 진화했습니다.`)
+function createStatusEmbed(target, user) {
+  const power = getUserPower(user);
+  const evolutions = getUserEvolutions(user);
+  const stats = user.stats || {};
+  const displayName = getDisplayName(target, user);
+  const activeEvolutions = evolutions.filter((evolution) => evolution.durability > 0);
+  const totalDurability = evolutions.reduce((sum, evolution) => sum + evolution.durability, 0);
+  const maxDurability = evolutions.reduce((sum, evolution) => sum + evolution.maxDurability, 0);
+  const evolutionLines = evolutions.length > 0
+    ? evolutions.slice(0, 8).map((evolution, index) => {
+      const enhanceText = evolution.enhanceLevel > 0 ? `+${evolution.enhanceLevel}` : '+0';
+      const nextCost = getItemEnhancementCost(evolution.grade.key, evolution.enhanceLevel);
+      const nextChance = getItemEnhancementChance(evolution.grade.key, evolution.enhanceLevel);
+      const usable = evolution.durability > 0 ? '사용 가능' : '파손';
+      return [
+        `${index + 1}. [${evolution.grade.label}] ${evolution.itemName} ${enhanceText} (${usable})`,
+        `${formatDurabilityLine(evolution.durability, evolution.maxDurability)} · 다음 강화 ${formatChance(nextChance)} / ${formatCoins(nextCost)}`,
+      ].join('\n');
+    }).join('\n\n')
+    : '해금된 진화 아이템이 없습니다. `/아이템사용`으로 먼저 해금해 주세요.';
+  const nextTarget = evolutions[0];
+  const nextAction = nextTarget
+    ? `추천 강화: \`/아이템강화 아이템:${nextTarget.itemName}\`\n결투 전 확인: \`/상태\``
+    : '보관함 아이템을 얻은 뒤 `/아이템사용`으로 전투 진화를 해금해 주세요.';
+
+  return createUiEmbed({
+    color: uiTheme.colors.primary,
+    title: `${displayName}님의 상태`,
+    description: activeEvolutions.length > 0
+      ? `전투 가능 진화 ${activeEvolutions.length}개 / 전체 ${evolutions.length}개`
+      : '아직 전투 진화가 준비되지 않았습니다.',
+  })
     .addFields(
-      { name: '강화 증가', value: `공격 +${gain.attack} / 방어 +${gain.defense} / 행운 +${gain.luck}`, inline: false },
-      { name: '현재 수치', value: `공격 ${power.attack} / 방어 ${power.defense} / 행운 ${power.luck}`, inline: false },
+      { name: '자산', value: `${formatCoins(user.balance || 0)}\n방지권 ${user.protectionTickets || 0}장`, inline: true },
+      { name: '능력치', value: formatStatLine(power), inline: true },
+      {
+        name: '내구도',
+        value: evolutions.length > 0 ? formatDurabilityLine(totalDurability, maxDurability, 12) : '표시할 아이템 없음',
+        inline: false,
+      },
+      { name: '아이템 상태', value: truncateText(evolutionLines, 1024), inline: false },
+      {
+        name: '기록',
+        value: `결투 ${stats.battlesWon || 0}승 ${stats.battlesLost || 0}패 / 강화 ${stats.itemEnhanceSuccesses || 0}/${stats.itemEnhanceAttempts || 0}`,
+        inline: false,
+      },
+      { name: '다음 행동', value: nextAction, inline: false },
+    );
+}
+
+function createItemUseEmbed(user, item, gain, power, remaining, evolutionRecord) {
+  const grade = getItemGradeConfig(evolutionRecord.grade);
+  const enhanceLevel = Number.isFinite(evolutionRecord.enhanceLevel)
+    ? Math.max(0, Math.floor(evolutionRecord.enhanceLevel))
+    : 0;
+  const nextCost = getItemEnhancementCost(grade.key, enhanceLevel);
+  const nextChance = getItemEnhancementChance(grade.key, enhanceLevel);
+
+  return createUiEmbed({
+    color: uiTheme.colors.success,
+    title: '아이템 진화 성공',
+    description: `${user}님이 **[${grade.label}] ${item.name}**을 사용해 **${evolutionRecord.name} Lv.${evolutionRecord.level}**로 진화했습니다.`,
+  })
+    .addFields(
+      { name: '능력치 증가', value: `공격 +${gain.attack} / 방어 +${gain.defense} / 행운 +${gain.luck}`, inline: false },
+      { name: '현재 수치', value: formatStatLine(power), inline: false },
       { name: '전투 기술', value: `${gain.evolution.attack}\n궁극기: ${gain.evolution.ultimate}`, inline: false },
+      { name: '다음 강화', value: `${formatCoins(nextCost)} / 성공률 ${formatChance(nextChance)}`, inline: true },
       { name: '남은 아이템', value: `${remaining}개`, inline: true },
     );
+}
+
+function createItemEnhanceEmbed({
+  user,
+  evolution,
+  success,
+  chance,
+  cost,
+  previousLevel,
+  nextLevel,
+  protectedByTicket,
+  destroyed,
+  protectionTickets,
+  power,
+  gain,
+  balance,
+}) {
+  const color = success ? uiTheme.colors.success : protectedByTicket ? uiTheme.colors.warning : uiTheme.colors.danger;
+  const grade = evolution.grade || getItemGradeConfig(evolution.definition.grade);
+  const currentLevel = destroyed ? 0 : nextLevel;
+  const nextCost = destroyed ? null : getItemEnhancementCost(grade.key, currentLevel);
+  const nextChance = destroyed ? null : getItemEnhancementChance(grade.key, currentLevel);
+  const resultText = success
+    ? `+${previousLevel} -> +${nextLevel}`
+    : protectedByTicket
+      ? `+${previousLevel} 유지`
+      : `+${previousLevel} -> 파괴`;
+  const embed = createUiEmbed({
+    color,
+    title: success ? '아이템 강화 성공' : protectedByTicket ? '강화 실패 - 방지권 발동' : '강화 실패 - 아이템 파괴',
+    description: `${user}님이 **[${grade.label}] ${evolution.itemName}** 강화에 도전했습니다.`,
+  })
+    .addFields(
+      { name: '결과', value: resultText, inline: true },
+      { name: '도전 확률', value: formatChance(chance), inline: true },
+      { name: '소모 노코인', value: formatCoins(cost), inline: true },
+      { name: '보유 상태', value: `잔액 ${formatCoins(balance)}\n방지권 ${protectionTickets || 0}장`, inline: false },
+    );
+
+  if (success) {
+    embed.addFields(
+      { name: '능력치 증가', value: `공격 +${gain.attack} / 방어 +${gain.defense} / 행운 +${gain.luck}`, inline: false },
+      { name: '현재 수치', value: formatStatLine(power), inline: false },
+    );
+  } else {
+    embed.addFields({
+      name: '처리',
+      value: protectedByTicket
+        ? '방지권이 즉시 사용되어 아이템 파괴와 레벨 초기화를 막았습니다.'
+        : '방지권이 없어 아이템 진화가 삭제되었습니다. 다시 사용하려면 같은 아이템을 `/아이템사용`으로 해금해야 합니다.',
+      inline: false,
+    });
+  }
+
+  if (!destroyed) {
+    embed.addFields({
+      name: '다음 강화',
+      value: `${formatCoins(nextCost)} / 성공률 ${formatChance(nextChance)}`,
+      inline: false,
+    });
+  }
+
+  return embed;
 }
 
 function createFishingEmbed(stage, payload = {}) {
   const scenes = {
     cast: {
-      color: 0x5865f2,
+      color: uiTheme.colors.primary,
       title: '낚시 시작',
       text: '낚싯줄을 물가 깊숙이 던졌습니다.',
       art: [
@@ -715,12 +1334,12 @@ function createFishingEmbed(stage, payload = {}) {
       ].join('\n'),
     },
     bite: {
-      color: 0xf1c40f,
+      color: uiTheme.colors.economy,
       title: '입질 감지',
       text: '수면 아래에서 무언가 낚싯줄을 강하게 잡아당깁니다.',
       art: [
         '      |',
-        '      |   운지',
+        '      |   입질',
         '~~~~~~|~~><>~~~~~~',
         '      J',
         '~~~~~~~~~~~~~~~~~~~',
@@ -739,7 +1358,7 @@ function createFishingEmbed(stage, payload = {}) {
       ].join('\n'),
     },
     caught: {
-      color: 0x2ecc71,
+      color: uiTheme.colors.success,
       title: '잡혔다!',
       text: `${payload.user}님이 **${payload.reward?.label || '무언가'}**을 낚았습니다.`,
       art: [
@@ -752,30 +1371,42 @@ function createFishingEmbed(stage, payload = {}) {
     },
   };
   const scene = scenes[stage] || scenes.cast;
-  const embed = new EmbedBuilder()
-    .setColor(scene.color)
-    .setTitle(scene.title)
-    .setDescription(`${scene.text}\n\n\`\`\`\n${scene.art}\n\`\`\``);
+  const embed = createUiEmbed({
+    color: scene.color,
+    title: scene.title,
+    description: `${scene.text}\n\n\`\`\`\n${scene.art}\n\`\`\``,
+  });
 
   if (stage === 'caught' && payload.reward) {
-    embed.addFields(
-      { name: '획득 가치', value: formatCoins(payload.reward.amount), inline: true },
-      { name: '보관함 추가', value: `${payload.inventoryItem?.name || payload.reward.label} x${payload.inventoryItem?.count || 1}`, inline: true },
-      { name: '현재 잔액', value: formatCoins(payload.balance), inline: true },
-    );
+    if (payload.reward.protectionTicket) {
+      embed.addFields(
+        { name: '특수 획득', value: '강화 실패 시 자동으로 아이템 파괴를 막는 방지권을 얻었습니다.', inline: false },
+        { name: '보유 방지권', value: `${payload.protectionTickets || 0}장`, inline: true },
+        { name: '현재 잔액', value: formatCoins(payload.balance), inline: true },
+      );
+    } else {
+      embed.addFields(
+        { name: '획득 가치', value: formatCoins(payload.reward.amount), inline: true },
+        { name: '보관함 추가', value: `${payload.inventoryItem?.name || payload.reward.label} x${payload.inventoryItem?.count || 1}`, inline: true },
+        { name: '현재 잔액', value: formatCoins(payload.balance), inline: true },
+      );
+    }
   }
 
   return embed;
 }
 
 function createBattleChallengeEmbed(challenge) {
-  const embed = new EmbedBuilder()
-    .setColor(0xfee75c)
-    .setTitle('결투 신청')
-    .setDescription(`<@${challenge.challengerId}>님이 <@${challenge.opponentId}>님에게 결투를 신청했습니다.`)
+  const embed = createUiEmbed({
+    color: uiTheme.colors.warning,
+    title: '결투 신청',
+    description: `<@${challenge.challengerId}>님이 <@${challenge.opponentId}>님에게 결투를 신청했습니다.`,
+  })
     .addFields(
+      { name: '도전자', value: `<@${challenge.challengerId}>`, inline: true },
+      { name: '상대', value: `<@${challenge.opponentId}>`, inline: true },
       { name: '베팅 코인', value: challenge.wager > 0 ? formatCoins(challenge.wager) : '없음', inline: true },
-      { name: '수락 제한', value: '5분', inline: true },
+      { name: '수락 제한', value: '5분 안에 상대만 수락할 수 있습니다.', inline: false },
     );
 
   return embed;
@@ -786,7 +1417,7 @@ function createBattleChallengeComponents(challengeId) {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(battleCustomId('accept', challengeId))
-        .setLabel('수락')
+        .setLabel('결투 수락')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId(battleCustomId('decline', challengeId))
@@ -888,10 +1519,11 @@ function simulateBattle(challenge, challengerRecord, opponentRecord) {
 }
 
 function createBattleBroadcastEmbed(challenge, battle, visibleRounds = 0, finalResult = null) {
-  const embed = new EmbedBuilder()
-    .setColor(finalResult ? 0x57f287 : 0xed4245)
-    .setTitle(finalResult ? '결투 종료' : '결투 중계')
-    .setDescription(`<@${challenge.challengerId}> vs <@${challenge.opponentId}>`);
+  const embed = createUiEmbed({
+    color: finalResult ? uiTheme.colors.success : uiTheme.colors.battle,
+    title: finalResult ? '결투 종료' : '결투 중계',
+    description: `<@${challenge.challengerId}> vs <@${challenge.opponentId}>`,
+  });
 
   if (!battle) {
     embed.addFields({ name: '대기', value: '상대가 결투장에 들어오는 중입니다.', inline: false });
@@ -906,6 +1538,8 @@ function createBattleBroadcastEmbed(challenge, battle, visibleRounds = 0, finalR
           itemName: evolution.itemName,
           name: evolution.name,
           level: evolution.level,
+          enhanceLevel: evolution.enhanceLevel,
+          grade: evolution.grade.key,
           used: evolution.used,
         }]),
       ),
@@ -919,6 +1553,8 @@ function createBattleBroadcastEmbed(challenge, battle, visibleRounds = 0, finalR
           itemName: evolution.itemName,
           name: evolution.name,
           level: evolution.level,
+          enhanceLevel: evolution.enhanceLevel,
+          grade: evolution.grade.key,
           used: evolution.used,
         }]),
       ),
@@ -981,10 +1617,11 @@ function createBetEmbed(bet) {
     summaryLines.push(`종료: <t:${closedAt}:R>`);
   }
 
-  const embed = new EmbedBuilder()
-    .setColor(isOpen ? 0xd83a4b : 0x5865f2)
-    .setTitle(`베팅 ${bet.id}`)
-    .setDescription(`**${bet.topic}**`)
+  const embed = createUiEmbed({
+    color: isOpen ? uiTheme.colors.battle : uiTheme.colors.primary,
+    title: `베팅 ${bet.id}`,
+    description: `**${bet.topic}**`,
+  })
     .addFields(
       bet.options.map((option) => ({
         name: truncateText(option.name, 256),
@@ -1002,7 +1639,7 @@ function createBetEmbed(bet) {
       value: summaryLines.join('\n'),
       inline: false,
     })
-    .setFooter({ text: `생성자 ${bet.createdBy}` })
+    .setFooter({ text: `${uiTheme.footer} · 생성자 ${bet.createdBy}` })
     .setTimestamp(new Date(bet.createdAt));
 
   if (bet.source?.type === 'polymarket') {
@@ -1032,13 +1669,14 @@ function createPolymarketMarketEmbed(market, charts = []) {
   });
   const status = market.closed ? '종료됨' : market.active ? '진행 중' : '비활성';
 
-  return new EmbedBuilder()
-    .setColor(market.active ? 0x2ecc71 : 0x95a5a6)
-    .setTitle(truncateText(market.question, 256))
-    .setDescription([
+  return createUiEmbed({
+    color: market.active ? uiTheme.colors.market : uiTheme.colors.muted,
+    title: truncateText(market.question, 256),
+    description: [
       `[Polymarket에서 보기](${market.url})`,
       '이 봇은 시장 정보만 가져오며 실제 Polymarket 주문은 넣지 않습니다.',
-    ].join('\n'))
+    ].join('\n'),
+  })
     .addFields(
       {
         name: '선택지',
@@ -1066,14 +1704,15 @@ function createPolymarketMarketEmbed(market, charts = []) {
         inline: false,
       },
     )
-    .setFooter({ text: '노코인 모의 베팅용 정보입니다.' });
+    .setFooter({ text: `${uiTheme.footer} · 노코인 모의 베팅용 정보` });
 }
 
 function createPolymarketSearchEmbed(query, markets) {
-  const embed = new EmbedBuilder()
-    .setColor(0x27ae60)
-    .setTitle('Polymarket 검색')
-    .setDescription(`검색어: **${truncateText(query, 180)}**`);
+  const embed = createUiEmbed({
+    color: uiTheme.colors.market,
+    title: 'Polymarket 검색',
+    description: `검색어: **${truncateText(query, 180)}**`,
+  });
 
   embed.addFields(
     markets.map((market, index) => ({
@@ -1121,10 +1760,11 @@ function createPolymarketMarketComponents(market) {
 }
 
 function createBetListEmbed(openBets) {
-  const embed = new EmbedBuilder()
-    .setColor(0xd83a4b)
-    .setTitle('진행 중인 베팅')
-    .setDescription(`열린 베팅 ${openBets.length}개`);
+  const embed = createUiEmbed({
+    color: uiTheme.colors.battle,
+    title: '진행 중인 베팅',
+    description: `열린 베팅 ${openBets.length}개`,
+  });
 
   embed.addFields(
     openBets.map((bet) => {
@@ -1234,10 +1874,11 @@ function createBetPickEmbed(bet, option, balance) {
   const total = totalBetPool(bet);
   const optionPool = pools[option.name] || 0;
 
-  return new EmbedBuilder()
-    .setColor(0xd83a4b)
-    .setTitle(`${bet.id} · ${truncateText(option.name, 120)}`)
-    .setDescription(`**${truncateText(bet.topic, 240)}**`)
+  return createUiEmbed({
+    color: uiTheme.colors.battle,
+    title: `${bet.id} · ${truncateText(option.name, 120)}`,
+    description: `**${truncateText(bet.topic, 240)}**`,
+  })
     .addFields(
       {
         name: '내 잔액',
@@ -1444,12 +2085,13 @@ function createBlackjackEmbed(game, options = {}) {
   const playerValue = getBlackjackHandValue(game.player);
   const dealerValue = getBlackjackHandValue(game.dealer);
   const statusText = options.statusText || '히트로 카드를 더 받거나 스탠드로 승부를 봅니다.';
-  const color = game.status === 'active' ? 0xf1c40f : options.color || 0x5865f2;
+  const color = game.status === 'active' ? uiTheme.colors.economy : options.color || uiTheme.colors.primary;
 
-  return new EmbedBuilder()
-    .setColor(color)
-    .setTitle('블랙잭')
-    .setDescription(statusText)
+  return createUiEmbed({
+    color,
+    title: '블랙잭',
+    description: statusText,
+  })
     .addFields(
       {
         name: '내 패',
@@ -1469,7 +2111,7 @@ function createBlackjackEmbed(game, options = {}) {
         inline: true,
       },
     )
-    .setFooter({ text: '블랙잭은 21에 가까운 쪽이 이깁니다.' })
+    .setFooter({ text: `${uiTheme.footer} · 21에 가까운 쪽이 승리` })
     .setTimestamp(new Date(game.updatedAt || game.createdAt));
 }
 
@@ -1640,27 +2282,65 @@ async function createPolymarketBet({ guildId, discordUser, market }) {
 }
 
 async function handleHelp(interaction) {
+  const embed = createUiEmbed({
+    color: uiTheme.colors.primary,
+    title: '명령어 도움말',
+    description: '필요한 메뉴를 골라 바로 실행하면 됩니다.',
+  }).addFields(
+    {
+      name: '경제',
+      value: formatCommandList([
+        ['/지갑', '노코인과 성장 상태 확인'],
+        ['/지급', '관리자 노코인 지급'],
+        ['/낚시', '아이템과 노코인 획득'],
+        ['/구걸', '5분마다 노코인 획득'],
+      ]),
+      inline: false,
+    },
+    {
+      name: '아이템 / 성장',
+      value: formatCommandList([
+        ['/보관함', '낚시 아이템 목록'],
+        ['/상태', '내구도와 다음 강화 확률'],
+        ['/아이템사용', '아이템으로 유저 진화'],
+        ['/아이템강화', '노코인으로 강화 도전'],
+      ]),
+      inline: false,
+    },
+    {
+      name: '베팅 / Polymarket',
+      value: formatCommandList([
+        ['/베팅생성', '서버 베팅 생성'],
+        ['/베팅목록', '진행 중인 베팅'],
+        ['/베팅정보', '베팅 상세 UI'],
+        ['/베팅', '노코인 걸기'],
+        ['/베팅종료', '정답 선택 후 정산'],
+        ['/폴리마켓검색', 'Polymarket 시장 검색'],
+        ['/폴리마켓생성', '시장 ID로 베팅 생성'],
+      ]),
+      inline: false,
+    },
+    {
+      name: '게임 / 결투',
+      value: formatCommandList([
+        ['/결투', '버튼으로 턴제 전투'],
+        ['/동전던지기', '앞면/뒷면 도박'],
+        ['/주사위', '1-6 숫자 맞히기'],
+        ['/블랙잭', '딜러와 블랙잭'],
+      ]),
+      inline: false,
+    },
+    {
+      name: '관리',
+      value: formatCommandList([
+        ['/업데이트', '슬래시 명령어 동기화'],
+      ]),
+      inline: false,
+    },
+  );
+
   await reply(interaction, {
-    content:
-      [
-        '`/지갑` 노코인 잔액 확인',
-        '`/베팅생성` 주제와 선택지 만들기 및 UI 베팅 열기',
-        '`/베팅목록` 진행 중인 베팅 보기',
-        '`/베팅정보` 베팅 상세 UI 보기',
-        '`/베팅` 노코인 걸기',
-        '`/베팅종료` 정답 선택지로 정산',
-        '`/낚시` 낚시로 노코인 획득',
-        '`/보관함` 낚시 아이템과 강화 수치 확인',
-        '`/아이템사용` 보관함 아이템으로 유저 강화',
-        '`/결투` 상대와 결투 신청 및 노코인 베팅',
-        '`/구걸` 시간 쿨타임마다 노코인 획득',
-        '`/동전던지기` 앞면/뒷면 도박',
-        '`/주사위` 1-6 숫자 맞히기',
-        '`/블랙잭` 딜러와 블랙잭',
-        '`/폴리마켓검색` Polymarket 정보로 노코인 베팅 생성',
-        '`/폴리마켓생성` market ID로 노코인 베팅 생성',
-        '`/업데이트` 명령어 동기화',
-      ].join('\n'),
+    embeds: [embed],
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -1679,20 +2359,86 @@ async function handleWallet(interaction) {
       stats: user.stats,
       power: getUserPower(user),
       itemCount: getInventoryItems(user).reduce((sum, item) => sum + item.count, 0),
+      protectionTickets: user.protectionTickets,
     };
   });
+  const stats = result.stats || {};
 
-  const embed = new EmbedBuilder()
-    .setColor(0x5865f2)
-    .setTitle(`${target.globalName || target.username}님의 지갑`)
+  const embed = createUiEmbed({
+    color: uiTheme.colors.economy,
+    title: `${getDisplayName(target)}님의 지갑`,
+    description: `${target}님의 노코인 현황`,
+  })
     .addFields(
       { name: '잔액', value: formatCoins(result.balance), inline: true },
       { name: '보관 아이템', value: `${result.itemCount}개`, inline: true },
-      { name: '강화 수치', value: `공격 ${result.power.attack} / 방어 ${result.power.defense} / 행운 ${result.power.luck}`, inline: false },
+      { name: '방지권', value: `${result.protectionTickets}장`, inline: true },
+      { name: '강화 수치', value: formatStatLine(result.power), inline: false },
+      {
+        name: '활동 요약',
+        value: [
+          `낚시 ${stats.fishing || 0}회 / 구걸 ${stats.begging || 0}회`,
+          `베팅 ${stats.betsWon || 0}승 ${stats.betsLost || 0}패`,
+          `도박 ${stats.gamblingWon || 0}승 ${stats.gamblingLost || 0}패 ${stats.gamblingPushed || 0}무 / 수익 ${formatCoins(stats.gamblingProfit || 0)}`,
+        ].join('\n'),
+        inline: false,
+      },
     );
 
   await reply(interaction, {
-    content: `${target}님의 지갑입니다.`,
+    embeds: [embed],
+  });
+}
+
+async function handleGrant(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  if (!isBotManager(interaction)) {
+    await reply(interaction, {
+      content: '노코인 지급은 서버 관리자만 사용할 수 있습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const target = interaction.options.getUser('유저', true);
+  const amount = interaction.options.getInteger('금액', true);
+  const reason = interaction.options.getString('사유')?.trim() || '관리자 지급';
+
+  if (target.bot) {
+    await reply(interaction, {
+      content: '봇에게는 노코인을 지급할 수 없습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, target);
+    user.balance += amount;
+    user.stats.grantsReceived += amount;
+
+    return {
+      balance: user.balance,
+    };
+  });
+
+  const embed = createUiEmbed({
+    color: uiTheme.colors.success,
+    title: '노코인 지급 완료',
+  })
+    .addFields(
+      { name: '대상', value: `${target}`, inline: true },
+      { name: '지급액', value: formatCoins(amount), inline: true },
+      { name: '현재 잔액', value: formatCoins(result.balance), inline: true },
+      { name: '사유', value: truncateText(reason, 1024), inline: false },
+    );
+
+  await reply(interaction, {
+    content: `${target}님에게 ${formatCoins(amount)}을 지급했습니다.`,
     embeds: [embed],
   });
 }
@@ -1713,6 +2459,25 @@ async function handleInventory(interaction) {
 
   await reply(interaction, {
     embeds: [createInventoryEmbed(target, result.user)],
+  });
+}
+
+async function handleStatus(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const target = interaction.options.getUser('유저') || interaction.user;
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, target);
+    return {
+      user,
+    };
+  });
+
+  await reply(interaction, {
+    embeds: [createStatusEmbed(target, result.user)],
   });
 }
 
@@ -1786,6 +2551,135 @@ async function handleUseItem(interaction) {
         result.remaining,
         result.evolutionRecord,
       ),
+    ],
+  });
+}
+
+async function handleEnhanceItem(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const itemName = interaction.options.getString('아이템', true).trim();
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+    const evolution = findUserEvolution(user, itemName);
+
+    if (!evolution) {
+      const suggestions = getUserEvolutions(user)
+        .slice(0, 5)
+        .map((item) => item.itemName)
+        .join(', ');
+
+      return {
+        ok: false,
+        reason: suggestions
+          ? `아직 해당 아이템 진화를 찾을 수 없습니다. 강화 가능 예: ${suggestions}`
+          : '강화할 진화가 없습니다. 먼저 `/아이템사용`으로 아이템 진화를 해금해 주세요.',
+      };
+    }
+
+    const current = user.evolutions[evolution.key];
+    const grade = evolution.grade || getItemGradeConfig(evolution.definition.grade);
+    const previousLevel = Number.isFinite(current.enhanceLevel)
+      ? Math.max(0, Math.floor(current.enhanceLevel))
+      : 0;
+    const cost = getItemEnhancementCost(grade.key, previousLevel);
+    const chance = getItemEnhancementChance(grade.key, previousLevel);
+
+    if (user.balance < cost) {
+      return {
+        ok: false,
+        reason: `노코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+      };
+    }
+
+    user.balance -= cost;
+    user.stats.itemEnhanceAttempts += 1;
+    user.stats.itemEnhanceSpent += cost;
+    current.grade = grade.key;
+    current.maxDurability = Number.isFinite(current.maxDurability) ? current.maxDurability : grade.maxDurability;
+    current.durability = Number.isFinite(current.durability) ? current.durability : current.maxDurability;
+    current.enhancePowerBonus ||= { attack: 0, defense: 0, luck: 0 };
+    current.enhanceAttempts = Math.max(0, Math.floor(current.enhanceAttempts || 0)) + 1;
+
+    const rolled = rollItemEnhancement(grade.key, previousLevel);
+    const gain = rolled.success ? getEnhancementPowerGain(evolution) : { attack: 0, defense: 0, luck: 0 };
+    let protectedByTicket = false;
+    let destroyed = false;
+
+    if (rolled.success) {
+      current.enhanceLevel = previousLevel + 1;
+      current.enhanceSuccesses = Math.max(0, Math.floor(current.enhanceSuccesses || 0)) + 1;
+      current.lastEnhancedAt = new Date().toISOString();
+      user.stats.itemEnhanceSuccesses += 1;
+      user.power.attack += gain.attack;
+      user.power.defense += gain.defense;
+      user.power.luck += gain.luck;
+      current.enhancePowerBonus.attack = Math.max(0, Math.floor(current.enhancePowerBonus.attack || 0)) + gain.attack;
+      current.enhancePowerBonus.defense = Math.max(0, Math.floor(current.enhancePowerBonus.defense || 0)) + gain.defense;
+      current.enhancePowerBonus.luck = Math.max(0, Math.floor(current.enhancePowerBonus.luck || 0)) + gain.luck;
+    } else {
+      if (user.protectionTickets > 0) {
+        user.protectionTickets -= 1;
+        user.stats.protectionTicketsUsed += 1;
+        protectedByTicket = true;
+        current.enhanceLevel = previousLevel;
+        current.lastProtectedAt = new Date().toISOString();
+      } else {
+        subtractPower(user, current.enhancePowerBonus);
+        delete user.evolutions[evolution.key];
+        destroyed = true;
+      }
+    }
+
+    return {
+      ok: true,
+      evolution: {
+        ...evolution,
+        enhanceLevel: destroyed ? 0 : current.enhanceLevel,
+        grade,
+      },
+      success: rolled.success,
+      protectedByTicket,
+      destroyed,
+      protectionTickets: user.protectionTickets,
+      chance,
+      cost,
+      previousLevel,
+      nextLevel: destroyed ? 0 : current.enhanceLevel,
+      gain,
+      power: getUserPower(user),
+      balance: user.balance,
+    };
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await reply(interaction, {
+    embeds: [
+      createItemEnhanceEmbed({
+        user: interaction.user,
+        evolution: result.evolution,
+        success: result.success,
+        chance: result.chance,
+        cost: result.cost,
+        previousLevel: result.previousLevel,
+        nextLevel: result.nextLevel,
+        protectedByTicket: result.protectedByTicket,
+        destroyed: result.destroyed,
+        protectionTickets: result.protectionTickets,
+        power: result.power,
+        gain: result.gain,
+        balance: result.balance,
+      }),
     ],
   });
 }
@@ -1877,6 +2771,10 @@ async function handleBattleUiInteraction(interaction) {
     return true;
   }
 
+  if (parsed.action === 'move') {
+    return handleBattleMoveInteraction(interaction, parsed);
+  }
+
   const challenge = getBattleChallenge(parsed.challengeId, interaction.guildId);
   if (!challenge) {
     await interaction.reply({
@@ -1894,18 +2792,70 @@ async function handleBattleUiInteraction(interaction) {
     return true;
   }
 
-  battleChallenges.delete(parsed.challengeId);
-
   if (parsed.action === 'decline') {
+    battleChallenges.delete(parsed.challengeId);
     await interaction.update({
       content: '결투 신청이 거절되었습니다.',
       embeds: [
-        new EmbedBuilder()
-          .setColor(0x95a5a6)
-          .setTitle('결투 취소')
-          .setDescription(`<@${challenge.opponentId}>님이 <@${challenge.challengerId}>님의 결투 신청을 거절했습니다.`),
+        createUiEmbed({
+          color: uiTheme.colors.muted,
+          title: '결투 취소',
+          description: `<@${challenge.opponentId}>님이 <@${challenge.challengerId}>님의 결투 신청을 거절했습니다.`,
+        }),
       ],
       components: [],
+    });
+    return true;
+  }
+
+  if (parsed.action === 'accept') {
+    battleChallenges.delete(parsed.challengeId);
+    await interaction.deferUpdate();
+
+    const result = await store.run((data) => {
+      const guild = store.ensureGuild(data, interaction.guildId);
+      const challengerRecord = store.ensureUser(guild, challenge.challengerId);
+      const opponentRecord = store.ensureUser(guild, challenge.opponentId);
+
+      if (challenge.wager > 0 && challengerRecord.balance < challenge.wager) {
+        return {
+          ok: false,
+          reason: `신청자의 노코인이 부족해서 결투가 취소되었습니다. 현재 잔액: ${formatCoins(challengerRecord.balance)}`,
+        };
+      }
+
+      if (challenge.wager > 0 && opponentRecord.balance < challenge.wager) {
+        return {
+          ok: false,
+          reason: `상대의 노코인이 부족해서 결투가 취소되었습니다. 현재 잔액: ${formatCoins(opponentRecord.balance)}`,
+        };
+      }
+
+      if (challenge.wager > 0) {
+        challengerRecord.balance -= challenge.wager;
+        opponentRecord.balance -= challenge.wager;
+      }
+
+      return {
+        ok: true,
+        session: createBattleSession(challenge, challengerRecord, opponentRecord),
+      };
+    });
+
+    if (!result.ok) {
+      await interaction.editReply({
+        content: result.reason,
+        embeds: [],
+        components: [],
+      });
+      return true;
+    }
+
+    battleSessions.set(result.session.id, result.session);
+    await interaction.editReply({
+      content: '결투가 시작되었습니다. 각자 자기 턴에 버튼을 눌러 행동하세요.',
+      embeds: [createBattleTurnEmbed(result.session)],
+      components: createBattleTurnComponents(result.session),
     });
     return true;
   }
@@ -1917,82 +2867,105 @@ async function handleBattleUiInteraction(interaction) {
     });
     return true;
   }
+}
 
-  await interaction.update({
-    content: '결투가 시작되었습니다.',
-    embeds: [createBattleBroadcastEmbed(challenge, null)],
-    components: [],
-  });
-
-  const result = await store.run((data) => {
-    const guild = store.ensureGuild(data, interaction.guildId);
-    const challengerRecord = store.ensureUser(guild, challenge.challengerId);
-    const opponentRecord = store.ensureUser(guild, challenge.opponentId);
-
-    if (challenge.wager > 0 && challengerRecord.balance < challenge.wager) {
-      return {
-        ok: false,
-        reason: `신청자의 노코인이 부족해서 결투가 취소됬다노. 현재 잔액: ${formatCoins(challengerRecord.balance)}`,
-      };
-    }
-
-    if (challenge.wager > 0 && opponentRecord.balance < challenge.wager) {
-      return {
-        ok: false,
-        reason: `상대의 노코인이 부족해서 결투가 취소됬다노. 현재 잔액: ${formatCoins(opponentRecord.balance)}`,
-      };
-    }
-
-    if (challenge.wager > 0) {
-      challengerRecord.balance -= challenge.wager;
-      opponentRecord.balance -= challenge.wager;
-    }
-
-    const battle = simulateBattle(challenge, challengerRecord, opponentRecord);
-    const winner = battle.winnerId === challenge.challengerId ? challengerRecord : opponentRecord;
-    const loser = battle.loserId === challenge.challengerId ? challengerRecord : opponentRecord;
-    const payout = challenge.wager * 2;
+async function settleBattleSession(session) {
+  return store.run((data) => {
+    const guild = store.ensureGuild(data, session.guildId);
+    const winner = store.ensureUser(guild, session.winnerId);
+    const loser = store.ensureUser(guild, session.loserId);
+    const payout = session.wager * 2;
 
     winner.balance += payout;
     winner.stats.battlesWon += 1;
-    winner.stats.battleProfit += challenge.wager;
+    winner.stats.battleProfit += session.wager;
     loser.stats.battlesLost += 1;
-    loser.stats.battleProfit -= challenge.wager;
+    loser.stats.battleProfit -= session.wager;
+    const winnerDurabilityLoss = 3;
+    const loserDurabilityLoss = 6;
+    const winnerItemsChanged = applyBattleDurabilityLoss(winner, winnerDurabilityLoss);
+    const loserItemsChanged = applyBattleDurabilityLoss(loser, loserDurabilityLoss);
 
     return {
       ok: true,
-      battle,
       finalResult: {
-        winnerId: battle.winnerId,
-        loserId: battle.loserId,
+        winnerId: session.winnerId,
+        loserId: session.loserId,
         payout,
         winnerBalance: winner.balance,
         loserBalance: loser.balance,
+        durabilityLoss: {
+          winner: winnerDurabilityLoss,
+          loser: loserDurabilityLoss,
+          winnerItemsChanged,
+          loserItemsChanged,
+        },
       },
     };
   });
+}
 
-  if (!result.ok) {
+async function handleBattleMoveInteraction(interaction, parsed) {
+  const session = getBattleSession(parsed.challengeId, interaction.guildId);
+  if (!session) {
+    await interaction.reply({
+      content: '진행 중인 결투를 찾을 수 없습니다. 새로 `/결투`를 신청해 주세요.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (![session.challengerId, session.opponentId].includes(interaction.user.id)) {
+    await interaction.reply({
+      content: '이 결투의 참가자만 조작할 수 있습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (interaction.user.id !== session.turnUserId) {
+    await interaction.reply({
+      content: `아직 당신 턴이 아닙니다. 현재 턴: <@${session.turnUserId}>`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const action = parsed.parts[0] || 'attack';
+  const allowedActions = new Set(['attack', 'skill', 'ultimate', 'guard']);
+  if (!allowedActions.has(action)) {
+    await interaction.reply({
+      content: '알 수 없는 결투 행동입니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (action === 'ultimate' && session.ultimateUsed[interaction.user.id]) {
+    await interaction.reply({
+      content: '궁극기는 결투당 한 번만 사용할 수 있습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  await interaction.deferUpdate();
+  const advanced = advanceBattleTurn(session, interaction.user.id, action);
+
+  if (advanced.status === 'finished') {
+    const result = await settleBattleSession(advanced);
     await interaction.editReply({
-      content: result.reason,
-      embeds: [],
+      content: '결투가 종료되었습니다.',
+      embeds: [createBattleTurnEmbed(advanced, result.finalResult)],
       components: [],
     });
     return true;
   }
 
-  for (let visibleRounds = 1; visibleRounds <= result.battle.rounds.length; visibleRounds += 1) {
-    await wait(900);
-    await interaction.editReply({
-      embeds: [createBattleBroadcastEmbed(challenge, result.battle, visibleRounds)],
-    });
-  }
-
-  await wait(900);
   await interaction.editReply({
-    content: '결투가 종료되었습니다.',
-    embeds: [createBattleBroadcastEmbed(challenge, result.battle, result.battle.rounds.length, result.finalResult)],
-    components: [],
+    content: '결투 진행 중입니다. 현재 턴 유저가 버튼을 눌러야 합니다.',
+    embeds: [createBattleTurnEmbed(advanced)],
+    components: createBattleTurnComponents(advanced),
   });
 
   return true;
@@ -2098,10 +3071,11 @@ async function handleBetInfo(interaction) {
       embeds.push(createPolymarketMarketEmbed(market, charts));
     } catch (error) {
       embeds.push(
-        new EmbedBuilder()
-          .setColor(0xe67e22)
-          .setTitle('Polymarket 차트')
-          .setDescription(`차트를 불러오지 못했습니다: ${error.message}`),
+        createUiEmbed({
+          color: uiTheme.colors.warning,
+          title: 'Polymarket 차트',
+          description: `차트를 불러오지 못했습니다: ${error.message}`,
+        }),
       );
     }
   }
@@ -2671,10 +3645,22 @@ async function handleFishing(interaction) {
     }
 
     const reward = fishReward(config.economyMultiplier);
-    user.balance += reward.amount;
     user.stats.fishing += 1;
-    const inventoryItem = addInventoryItem(user, reward);
     guild.cooldowns.fishing[interaction.user.id] = now;
+
+    if (reward.protectionTicket) {
+      user.protectionTickets += 1;
+      user.stats.protectionTicketsFound += 1;
+      return {
+        ok: true,
+        reward,
+        protectionTickets: user.protectionTickets,
+        balance: user.balance,
+      };
+    }
+
+    user.balance += reward.amount;
+    const inventoryItem = addInventoryItem(user, reward);
 
     return {
       ok: true,
@@ -2715,6 +3701,7 @@ async function handleFishing(interaction) {
         user: interaction.user,
         reward: result.reward,
         inventoryItem: result.inventoryItem,
+        protectionTickets: result.protectionTickets,
         balance: result.balance,
       }),
     ],
@@ -2757,7 +3744,18 @@ async function handleBegging(interaction) {
     return;
   }
 
-  await reply(interaction, `${interaction.user}님: ${result.reward.label} ${formatCoins(result.reward.amount)}을 얻었습니다. 현재 잔액: ${formatCoins(result.balance)}`);
+  const embed = createUiEmbed({
+    color: uiTheme.colors.economy,
+    title: '구걸 성공',
+    description: `${interaction.user}님이 ${result.reward.label}`,
+  }).addFields(
+    { name: '획득', value: formatCoins(result.reward.amount), inline: true },
+    { name: '현재 잔액', value: formatCoins(result.balance), inline: true },
+  );
+
+  await reply(interaction, {
+    embeds: [embed],
+  });
 }
 
 async function handleCoinFlip(interaction) {
@@ -2789,10 +3787,11 @@ async function handleCoinFlip(interaction) {
     heads: '앞면',
     tails: '뒷면',
   };
-  const embed = new EmbedBuilder()
-    .setColor(didWin ? 0x2ecc71 : 0xe74c3c)
-    .setTitle('동전 던지기')
-    .setDescription(didWin ? '적중했습니다.' : '빗나갔습니다.')
+  const embed = createUiEmbed({
+    color: didWin ? uiTheme.colors.success : uiTheme.colors.danger,
+    title: '동전 던지기',
+    description: didWin ? '적중했습니다.' : '빗나갔습니다.',
+  })
     .addFields(
       { name: '내 선택', value: labels[choice], inline: true },
       { name: '결과', value: labels[resultFace], inline: true },
@@ -2831,10 +3830,11 @@ async function handleDice(interaction) {
     return;
   }
 
-  const embed = new EmbedBuilder()
-    .setColor(didWin ? 0x2ecc71 : 0xe74c3c)
-    .setTitle('주사위')
-    .setDescription(didWin ? '정확히 맞혔습니다.' : '이번 숫자는 아니었습니다.')
+  const embed = createUiEmbed({
+    color: didWin ? uiTheme.colors.success : uiTheme.colors.danger,
+    title: '주사위',
+    description: didWin ? '정확히 맞혔습니다.' : '이번 숫자는 아니었습니다.',
+  })
     .addFields(
       { name: '내 선택', value: String(choice), inline: true },
       { name: '결과', value: String(roll), inline: true },
@@ -3144,6 +4144,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case '지갑':
         await handleWallet(interaction);
         break;
+      case '지급':
+        await handleGrant(interaction);
+        break;
       case '베팅생성':
         await handleCreateBet(interaction);
         break;
@@ -3165,8 +4168,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case '보관함':
         await handleInventory(interaction);
         break;
+      case '상태':
+        await handleStatus(interaction);
+        break;
       case '아이템사용':
         await handleUseItem(interaction);
+        break;
+      case '아이템강화':
+        await handleEnhanceItem(interaction);
         break;
       case '결투':
         await handleBattle(interaction);

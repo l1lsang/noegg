@@ -32,6 +32,32 @@ function buildCommandData() {
       ),
 
     new SlashCommandBuilder()
+      .setName('지급')
+      .setDescription('관리자가 유저에게 노코인을 지급합니다.')
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addUserOption((option) =>
+        option
+          .setName('유저')
+          .setDescription('노코인을 받을 유저입니다.')
+          .setRequired(true),
+      )
+      .addIntegerOption((option) =>
+        option
+          .setName('금액')
+          .setDescription('지급할 노코인 금액입니다.')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(1000000000),
+      )
+      .addStringOption((option) =>
+        option
+          .setName('사유')
+          .setDescription('지급 사유입니다.')
+          .setRequired(false)
+          .setMaxLength(120),
+      ),
+
+    new SlashCommandBuilder()
       .setName('베팅생성')
       .setDescription('새 베팅 주제와 선택지를 만듭니다.')
       .addStringOption((option) =>
@@ -123,12 +149,33 @@ function buildCommandData() {
       ),
 
     new SlashCommandBuilder()
+      .setName('상태')
+      .setDescription('유저의 전투 상태, 내구도, 다음 강화 확률을 확인합니다.')
+      .addUserOption((option) =>
+        option
+          .setName('유저')
+          .setDescription('상태를 확인할 유저입니다.')
+          .setRequired(false),
+      ),
+
+    new SlashCommandBuilder()
       .setName('아이템사용')
       .setDescription('보관함 아이템 1개를 사용해서 유저를 강화합니다.')
       .addStringOption((option) =>
         option
           .setName('아이템')
           .setDescription('사용할 아이템 이름입니다. `/보관함`에서 확인할 수 있습니다.')
+          .setRequired(true)
+          .setMaxLength(80),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('아이템강화')
+      .setDescription('노코인을 사용해서 해금된 아이템 진화를 확률 강화합니다.')
+      .addStringOption((option) =>
+        option
+          .setName('아이템')
+          .setDescription('강화할 아이템 이름입니다. `/보관함`에서 확인할 수 있습니다.')
           .setRequired(true)
           .setMaxLength(80),
       ),
