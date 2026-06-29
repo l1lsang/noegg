@@ -127,6 +127,36 @@ function isExpiredInteractionError(error) {
     || /unknown interaction/i.test(String(error?.message || ''));
 }
 
+function isInteractionNotRepliedError(error) {
+  return error?.code === 'InteractionNotReplied'
+    || /reply to this interaction has not been sent or deferred/i.test(String(error?.message || ''));
+}
+
+async function sendInteractionFollowUp(interaction, payload) {
+  const normalized = typeof payload === 'string' ? { content: payload } : payload;
+
+  try {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp(normalized);
+      return;
+    }
+
+    if (interaction.webhook) {
+      await interaction.webhook.send(normalized);
+      return;
+    }
+
+    await interaction.followUp(normalized);
+  } catch (error) {
+    if (isInteractionNotRepliedError(error) && interaction.webhook) {
+      await interaction.webhook.send(normalized);
+      return;
+    }
+
+    throw error;
+  }
+}
+
 async function sendInteractionResponse(interaction, payload) {
   const normalized = typeof payload === 'string' ? { content: payload } : payload;
 
@@ -138,11 +168,11 @@ async function sendInteractionResponse(interaction, payload) {
 
     await interaction.reply(normalized);
   } catch (error) {
-    if (!isAlreadyAcknowledgedError(error)) {
+    if (!isAlreadyAcknowledgedError(error) && !isInteractionNotRepliedError(error)) {
       throw error;
     }
 
-    await interaction.followUp(normalized);
+    await sendInteractionFollowUp(interaction, normalized);
   }
 }
 
@@ -160,11 +190,11 @@ async function safeErrorReply(interaction, message) {
 
     await interaction.reply(payload);
   } catch (error) {
-    if (isAlreadyAcknowledgedError(error)) {
+    if (isAlreadyAcknowledgedError(error) || isInteractionNotRepliedError(error)) {
       try {
-        await interaction.followUp(payload);
+        await sendInteractionFollowUp(interaction, payload);
       } catch (followUpError) {
-        if (!isExpiredInteractionError(followUpError)) {
+        if (!isExpiredInteractionError(followUpError) && !isInteractionNotRepliedError(followUpError)) {
           console.warn(`Failed to send interaction error follow-up: ${followUpError.message}`);
         }
       }
@@ -2250,7 +2280,7 @@ async function handleBetAmountButton(interaction, parsed) {
     components: [],
   });
 
-  await interaction.followUp({
+  await sendInteractionFollowUp(interaction, {
     content,
     embeds: [createBetEmbed(result.bet)],
     components: createBetComponents(result.bet),
