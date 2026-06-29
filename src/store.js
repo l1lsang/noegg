@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const admin = require('firebase-admin');
+const { cert, getApp, getApps, initializeApp } = require('firebase-admin/app');
+const { getFirestore, initializeFirestore } = require('firebase-admin/firestore');
 
 const DEFAULT_DATA = {
   version: 1,
@@ -23,6 +24,14 @@ function parseServiceAccount(rawJson, rawBase64) {
   }
 
   return serviceAccount;
+}
+
+function getFirebaseApp(appOptions) {
+  if (getApps().length > 0) {
+    return getApp();
+  }
+
+  return initializeApp(appOptions);
 }
 
 class BaseStore {
@@ -163,18 +172,18 @@ class FirestoreStore extends BaseStore {
     const appOptions = {};
 
     if (serviceAccount) {
-      appOptions.credential = admin.credential.cert(serviceAccount);
+      appOptions.credential = cert(serviceAccount);
       appOptions.projectId = options.projectId || serviceAccount.project_id;
     } else if (options.projectId) {
       appOptions.projectId = options.projectId;
     }
 
-    if (!admin.apps.length) {
-      admin.initializeApp(appOptions);
+    const app = getFirebaseApp(appOptions);
+    try {
+      this.db = initializeFirestore(app, { ignoreUndefinedProperties: true });
+    } catch (error) {
+      this.db = getFirestore(app);
     }
-
-    this.db = admin.firestore();
-    this.db.settings({ ignoreUndefinedProperties: true });
     this.docRef = this.db.collection(this.collection).doc(this.document);
   }
 
