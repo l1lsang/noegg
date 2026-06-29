@@ -115,6 +115,60 @@ function buildCommandData() {
     new SlashCommandBuilder()
       .setName('구걸')
       .setDescription('구걸을 해서 노코인을 얻습니다.'),
+
+    new SlashCommandBuilder()
+      .setName('동전던지기')
+      .setDescription('앞면 또는 뒷면에 노코인을 겁니다.')
+      .addStringOption((option) =>
+        option
+          .setName('선택')
+          .setDescription('예측할 동전 면입니다.')
+          .setRequired(true)
+          .addChoices(
+            { name: '앞면', value: 'heads' },
+            { name: '뒷면', value: 'tails' },
+          ),
+      )
+      .addIntegerOption((option) =>
+        option
+          .setName('금액')
+          .setDescription('걸 노코인 금액입니다. 맞히면 2배를 돌려받습니다.')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(100000000),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('주사위')
+      .setDescription('1부터 6까지 숫자를 맞히는 도박입니다.')
+      .addIntegerOption((option) =>
+        option
+          .setName('숫자')
+          .setDescription('예측할 주사위 숫자입니다.')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(6),
+      )
+      .addIntegerOption((option) =>
+        option
+          .setName('금액')
+          .setDescription('걸 노코인 금액입니다. 맞히면 6배를 돌려받습니다.')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(100000000),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('블랙잭')
+      .setDescription('딜러와 블랙잭을 합니다.')
+      .addIntegerOption((option) =>
+        option
+          .setName('금액')
+          .setDescription('걸 노코인 금액입니다.')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(100000000),
+      ),
   ];
 
   return commands.map((command) => command.toJSON());

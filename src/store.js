@@ -56,9 +56,13 @@ class JsonStore {
     data.guilds[guildId] ||= {
       users: {},
       bets: {},
+      blackjackGames: {},
       nextBetNumber: 1,
       cooldowns: {
         fishing: {},
+        begging: {},
+      },
+      dailyActions: {
         begging: {},
       },
     };
@@ -66,10 +70,13 @@ class JsonStore {
     const guild = data.guilds[guildId];
     guild.users ||= {};
     guild.bets ||= {};
+    guild.blackjackGames ||= {};
     guild.nextBetNumber ||= 1;
     guild.cooldowns ||= {};
     guild.cooldowns.fishing ||= {};
     guild.cooldowns.begging ||= {};
+    guild.dailyActions ||= {};
+    guild.dailyActions.begging ||= {};
     return guild;
   }
 
@@ -82,6 +89,13 @@ class JsonStore {
         begging: 0,
         betsWon: 0,
         betsLost: 0,
+        gamblingWon: 0,
+        gamblingLost: 0,
+        gamblingPushed: 0,
+        gamblingProfit: 0,
+        blackjackWon: 0,
+        blackjackLost: 0,
+        blackjackPushed: 0,
       },
       createdAt: new Date().toISOString(),
     };
@@ -93,6 +107,13 @@ class JsonStore {
     record.stats.begging ||= 0;
     record.stats.betsWon ||= 0;
     record.stats.betsLost ||= 0;
+    record.stats.gamblingWon ||= 0;
+    record.stats.gamblingLost ||= 0;
+    record.stats.gamblingPushed ||= 0;
+    record.stats.gamblingProfit ||= 0;
+    record.stats.blackjackWon ||= 0;
+    record.stats.blackjackLost ||= 0;
+    record.stats.blackjackPushed ||= 0;
 
     if (typeof discordUser !== 'string') {
       record.username = discordUser.username;

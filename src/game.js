@@ -89,6 +89,10 @@ const FISHING_TABLE = [
   { name: '낡은 세냥 양말', min: 5, max: 20, weight: 20 },
   { name: '남랭이 딜도', min: 20, max: 60, weight: 35 },
   { name: '쿼카의 상자', min: 60, max: 140, weight: 25 },
+  { name: '도라이의 토스 계좌', min: 80, max: 160, weight: 18 },
+  { name: '한도 끝난 골탱의 GPT 계정', min: 120, max: 220, weight: 14 },
+  { name: '물에 젖은 라마의 휴대폰', min: 160, max: 280, weight: 10 },
+  { name: '라마의 휴대폰', min: 220, max: 360, weight: 7 },
   { name: '히나의 비타민칼', min: 180, max: 360, weight: 8 },
   { name: '전설의 피아제 시계', min: 600, max: 1200, weight: 1 },
 ];

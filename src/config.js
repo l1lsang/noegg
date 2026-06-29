@@ -39,7 +39,6 @@ module.exports = {
   syncScope: (process.env.SYNC_SCOPE || 'guild').toLowerCase(),
   startingBalance: toPositiveInt(process.env.STARTING_BALANCE, 1000),
   fishingCooldownMs: toPositiveInt(process.env.FISHING_COOLDOWN_SECONDS, 300) * 1000,
-  beggingCooldownMs: toPositiveInt(process.env.BEGGING_COOLDOWN_SECONDS, 600) * 1000,
   dataFile,
   port: process.env.PORT,
 };
