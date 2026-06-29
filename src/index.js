@@ -110,12 +110,71 @@ function canCloseBet(interaction, bet) {
 async function reply(interaction, payload) {
   const normalized = typeof payload === 'string' ? { content: payload } : payload;
 
-  if (interaction.deferred || interaction.replied) {
-    await interaction.editReply(normalized);
-    return;
-  }
+  await sendInteractionResponse(interaction, normalized);
+}
 
-  await interaction.reply(normalized);
+function isDiscordErrorCode(error, code) {
+  return error?.code === code || error?.rawError?.code === code;
+}
+
+function isAlreadyAcknowledgedError(error) {
+  return isDiscordErrorCode(error, 40060)
+    || /already been acknowledged/i.test(String(error?.message || ''));
+}
+
+function isExpiredInteractionError(error) {
+  return isDiscordErrorCode(error, 10062)
+    || /unknown interaction/i.test(String(error?.message || ''));
+}
+
+async function sendInteractionResponse(interaction, payload) {
+  const normalized = typeof payload === 'string' ? { content: payload } : payload;
+
+  try {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(normalized);
+      return;
+    }
+
+    await interaction.reply(normalized);
+  } catch (error) {
+    if (!isAlreadyAcknowledgedError(error)) {
+      throw error;
+    }
+
+    await interaction.followUp(normalized);
+  }
+}
+
+async function safeErrorReply(interaction, message) {
+  const payload = {
+    content: message,
+    flags: MessageFlags.Ephemeral,
+  };
+
+  try {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({ content: message, embeds: [], components: [] });
+      return;
+    }
+
+    await interaction.reply(payload);
+  } catch (error) {
+    if (isAlreadyAcknowledgedError(error)) {
+      try {
+        await interaction.followUp(payload);
+      } catch (followUpError) {
+        if (!isExpiredInteractionError(followUpError)) {
+          console.warn(`Failed to send interaction error follow-up: ${followUpError.message}`);
+        }
+      }
+      return;
+    }
+
+    if (!isExpiredInteractionError(error)) {
+      console.warn(`Failed to send interaction error response: ${error.message}`);
+    }
+  }
 }
 
 function getKoreaDateParts(dateInput = new Date()) {
@@ -3112,12 +3171,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   } catch (error) {
     console.error(error);
     const message = '명령어 처리 중 오류가 발생했습니다. 콘솔 로그를 확인해 주세요.';
-
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({ content: message });
-    } else {
-      await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
-    }
+    await safeErrorReply(interaction, message);
   }
 });
 
