@@ -11,14 +11,12 @@ services:
         sync: false
       - key: DISCORD_CLIENT_ID
         sync: false
-      - key: DISCORD_GUILD_ID
-        sync: false
       - key: BOT_OWNER_IDS
         sync: false
       - key: AUTO_SYNC_COMMANDS
         value: "true"
       - key: SYNC_SCOPE
-        value: guild
+        value: global
       - key: STORAGE_BACKEND
         value: firestore
       - key: FIRESTORE_PROJECT_ID

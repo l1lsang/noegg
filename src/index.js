@@ -17,7 +17,7 @@ const {
 
 const config = require('./config');
 const { createStore } = require('./store');
-const { syncCommands } = require('./sync-commands');
+const { resolveCommandScope, syncCommands } = require('./sync-commands');
 const {
   begReward,
   findOption,
@@ -1612,7 +1612,10 @@ async function handleUpdate(interaction) {
     return;
   }
 
-  const scope = interaction.options.getString('범위') || 'guild';
+  const scope = interaction.options.getString('범위') || resolveCommandScope({
+    configuredScope: config.syncScope,
+    guildId: interaction.guildId,
+  });
   const wantsGlobal = scope === 'global';
   const isOwner = ownerIds.has(interaction.user.id);
 
@@ -1643,8 +1646,14 @@ client.once(Events.ClientReady, async (readyClient) => {
 
   if (config.autoSyncCommands) {
     try {
-      const scope = config.syncScope === 'global' ? 'global' : 'guild';
+      const scope = resolveCommandScope({
+        configuredScope: config.syncScope,
+        guildId: config.guildId,
+      });
       const guildId = scope === 'guild' ? config.guildId : undefined;
+      if (scope === 'global' && !config.guildId) {
+        console.warn('DISCORD_GUILD_ID is not set. Auto-syncing global commands; Discord may take a while to show them.');
+      }
       await syncCommands({
         token: config.token,
         clientId: config.clientId || readyClient.user.id,

@@ -35,7 +35,7 @@ npm.cmd run deploy
 npm.cmd start
 ```
 
-처음에는 `DISCORD_GUILD_ID`를 넣고 서버 명령어로 등록하는 것을 추천합니다. 서버 명령어는 보통 바로 반영되고, 전역 명령어는 반영까지 시간이 걸릴 수 있습니다.
+`DISCORD_GUILD_ID`가 있으면 서버 명령어로 빠르게 등록되고, 없으면 전역 명령어로 등록됩니다. 전역 명령어는 Discord 반영까지 시간이 걸릴 수 있습니다.
 
 ## Slash command 등록 문제
 
@@ -45,8 +45,11 @@ npm.cmd start
 
 - `DISCORD_TOKEN`: 봇 토큰
 - `DISCORD_CLIENT_ID`: Discord Developer Portal의 Application ID
+
+선택 값:
+
 - `DISCORD_GUILD_ID`: 명령어를 바로 반영할 서버 ID
-- `SYNC_SCOPE`: 빠른 테스트는 `guild`
+- `SYNC_SCOPE`: `guild` 또는 `global`. 비워두면 길드 ID가 있을 때는 `guild`, 없을 때는 `global`
 
 값을 넣은 뒤 아래 명령어로 등록합니다.
 
@@ -60,7 +63,7 @@ npm.cmd run deploy
 
 - `DISCORD_TOKEN`: 봇 토큰
 - `DISCORD_CLIENT_ID`: Application ID
-- `DISCORD_GUILD_ID`: 명령어를 빠르게 동기화할 서버 ID
+- `DISCORD_GUILD_ID`: 선택 사항. 없으면 전역 명령어로 등록됩니다.
 - `BOT_OWNER_IDS`: `/업데이트` 전역 동기화를 허용할 유저 ID 목록
 - `STORAGE_BACKEND`: `firestore`
 - `FIRESTORE_PROJECT_ID`: Firebase 프로젝트 ID

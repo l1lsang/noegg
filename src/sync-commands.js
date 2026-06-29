@@ -1,6 +1,18 @@
 const { REST, Routes } = require('discord.js');
 const { buildCommandData } = require('./commands');
 
+function resolveCommandScope({ configuredScope, guildId }) {
+  if (configuredScope === 'guild') {
+    return guildId ? 'guild' : 'global';
+  }
+
+  if (configuredScope === 'global') {
+    return 'global';
+  }
+
+  return guildId ? 'guild' : 'global';
+}
+
 async function syncCommands({ token, clientId, guildId, scope = 'guild' }) {
   if (!token) {
     throw new Error('DISCORD_TOKEN is required.');
@@ -34,5 +46,6 @@ async function syncCommands({ token, clientId, guildId, scope = 'guild' }) {
 }
 
 module.exports = {
+  resolveCommandScope,
   syncCommands,
 };

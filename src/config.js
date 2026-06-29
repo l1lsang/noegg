@@ -36,7 +36,7 @@ module.exports = {
   guildId: process.env.DISCORD_GUILD_ID,
   ownerIds: splitIds(process.env.BOT_OWNER_IDS),
   autoSyncCommands: toBoolean(process.env.AUTO_SYNC_COMMANDS, false),
-  syncScope: (process.env.SYNC_SCOPE || 'guild').toLowerCase(),
+  syncScope: (process.env.SYNC_SCOPE || '').toLowerCase(),
   startingBalance: toPositiveInt(process.env.STARTING_BALANCE, 1000),
   fishingCooldownMs: toPositiveInt(process.env.FISHING_COOLDOWN_SECONDS, 300) * 1000,
   storageBackend: (process.env.STORAGE_BACKEND || 'firestore').toLowerCase(),
