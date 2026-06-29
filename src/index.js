@@ -37,6 +37,9 @@ const {
   getItemEnhancementCost,
   getItemEvolution,
   getItemGradeConfig,
+  getFishingProtectionTicketChance,
+  listFishingItems,
+  listItemGradeDropRates,
   nextBetId,
   normalizeKey,
   optionPools,
@@ -58,6 +61,22 @@ const battleChallengeTtlMs = 5 * 60 * 1000;
 const battleSessions = new Map();
 const battleSessionTtlMs = 20 * 60 * 1000;
 const battleMaxTurns = 12;
+const shopGradePriceMultipliers = {
+  common: 12,
+  uncommon: 18,
+  rare: 28,
+  epic: 45,
+  legendary: 75,
+  mythic: 120,
+};
+const weaponGradeBattleProfiles = {
+  common: { base: { attack: 14, defense: 12, luck: 5 }, biasScale: 4, levelScale: 1, enhanceScale: 3 },
+  uncommon: { base: { attack: 28, defense: 22, luck: 10 }, biasScale: 7, levelScale: 2, enhanceScale: 6 },
+  rare: { base: { attack: 52, defense: 40, luck: 18 }, biasScale: 12, levelScale: 4, enhanceScale: 11 },
+  epic: { base: { attack: 90, defense: 70, luck: 32 }, biasScale: 20, levelScale: 7, enhanceScale: 20 },
+  legendary: { base: { attack: 145, defense: 110, luck: 50 }, biasScale: 32, levelScale: 11, enhanceScale: 34 },
+  mythic: { base: { attack: 230, defense: 170, luck: 80 }, biasScale: 50, levelScale: 18, enhanceScale: 55 },
+};
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -307,6 +326,43 @@ function formatItemGradeLabel(grade) {
 function getItemGradeColor(grade, fallback = uiTheme.colors.inventory) {
   const config = normalizeGradeConfig(grade);
   return config.color || fallback;
+}
+
+function getShopItemPrice(item) {
+  const grade = normalizeGradeConfig(item.grade);
+  const multiplier = shopGradePriceMultipliers[grade.key] || 20;
+  return Math.max(grade.baseCost * 2, Math.ceil(item.averageAmount * multiplier));
+}
+
+function getShopItems() {
+  return listFishingItems(economyMultiplier)
+    .map((item) => ({
+      ...item,
+      price: getShopItemPrice(item),
+    }));
+}
+
+function findShopItem(rawName) {
+  const wanted = normalizeKey(rawName);
+  return getShopItems().find((item) =>
+    normalizeKey(item.name) === wanted
+    || normalizeKey(item.evolution?.evolution) === wanted
+  );
+}
+
+function getItemRepairCost(evolution) {
+  const grade = normalizeGradeConfig(evolution.grade || evolution.definition?.grade);
+  const maxDurability = Math.max(1, Math.floor(evolution.maxDurability || grade.maxDurability));
+  const durability = Math.max(0, Math.min(maxDurability, Math.floor(evolution.durability || 0)));
+  const missing = maxDurability - durability;
+
+  if (missing <= 0) {
+    return 0;
+  }
+
+  const enhanceLevel = Math.max(0, Math.floor(evolution.enhanceLevel || 0));
+  const fullRepairCost = Math.ceil(grade.baseCost * (0.75 + enhanceLevel * 0.18));
+  return Math.max(1, Math.ceil((fullRepairCost * missing) / maxDurability));
 }
 
 function formatStatLine(power) {
@@ -785,25 +841,78 @@ function getUserEvolutions(user) {
     );
 }
 
-function getBattleStyle(user) {
-  const evolutions = getUserEvolutions(user);
-  const totals = evolutions.reduce(
-    (sum, evolution) => {
-      const bias = getEvolutionStatBias(evolution.definition);
-      const levelWeight = Math.max(1, evolution.level + evolution.enhanceLevel);
-      sum.attack += bias.attack * levelWeight;
-      sum.defense += bias.defense * levelWeight;
-      sum.luck += bias.luck * levelWeight;
-      return sum;
-    },
-    { attack: 0, defense: 0, luck: 0 },
-  );
+function findUserEvolutionByKey(user, rawKey) {
+  const wanted = normalizeKey(rawKey);
+  return getUserEvolutions(user).find((evolution) => evolution.key === wanted);
+}
+
+function getWeaponBattlePower(evolution) {
+  if (!evolution || evolution.durability <= 0) {
+    return { attack: 6, defense: 6, luck: 2 };
+  }
+
+  const grade = normalizeGradeConfig(evolution.grade || evolution.definition?.grade);
+  const profile = weaponGradeBattleProfiles[grade.key] || weaponGradeBattleProfiles.common;
+  const bias = getEvolutionStatBias(evolution.definition);
+  const level = Math.max(1, Math.floor(evolution.level || 1));
+  const enhanceLevel = Math.max(0, Math.floor(evolution.enhanceLevel || 0));
+  const durabilityRatio = Math.max(0.35, Math.min(1, evolution.durability / Math.max(1, evolution.maxDurability)));
 
   return {
-    evolutions: evolutions.filter((evolution) => evolution.durability > 0),
-    attackBonus: Math.min(40, totals.attack),
-    defenseBonus: Math.min(40, totals.defense),
-    luckBonus: Math.min(40, totals.luck),
+    attack: Math.max(1, Math.floor((
+      profile.base.attack
+      + Math.max(0, bias.attack) * profile.biasScale
+      + level * profile.levelScale
+      + enhanceLevel * profile.enhanceScale
+    ) * durabilityRatio)),
+    defense: Math.max(1, Math.floor((
+      profile.base.defense
+      + Math.max(0, bias.defense) * profile.biasScale
+      + level * profile.levelScale
+      + enhanceLevel * profile.enhanceScale
+    ) * durabilityRatio)),
+    luck: Math.max(1, Math.floor((
+      profile.base.luck
+      + Math.max(0, bias.luck) * Math.max(2, Math.floor(profile.biasScale * 0.7))
+      + level * Math.max(1, Math.floor(profile.levelScale * 0.7))
+      + enhanceLevel * Math.max(1, Math.floor(profile.enhanceScale * 0.65))
+    ) * durabilityRatio)),
+  };
+}
+
+function getBestBattleWeapon(user) {
+  return getUserEvolutions(user)
+    .filter((evolution) => evolution.durability > 0)
+    .map((evolution) => ({
+      evolution,
+      power: getWeaponBattlePower(evolution),
+    }))
+    .sort((a, b) => getPowerScore(b.power) - getPowerScore(a.power))[0] || null;
+}
+
+function getBattleStyle(user, weaponKey) {
+  const weapon = weaponKey ? findUserEvolutionByKey(user, weaponKey) : getBestBattleWeapon(user)?.evolution;
+
+  if (!weapon || weapon.durability <= 0) {
+    return {
+      weapon: null,
+      evolutions: [],
+      power: { attack: 6, defense: 6, luck: 2 },
+      attackBonus: 0,
+      defenseBonus: 0,
+      luckBonus: 0,
+    };
+  }
+
+  const power = getWeaponBattlePower(weapon);
+
+  return {
+    weapon,
+    evolutions: [weapon],
+    power,
+    attackBonus: Math.floor(power.attack * 0.12),
+    defenseBonus: Math.floor(power.defense * 0.12),
+    luckBonus: Math.floor(power.luck * 0.15),
   };
 }
 
@@ -882,12 +991,14 @@ function resolveBattleMove({
 }
 
 function createBattleSession(challenge, challengerRecord, opponentRecord) {
-  const challengerPower = getUserPower(challengerRecord);
-  const opponentPower = getUserPower(opponentRecord);
-  const challengerStyle = getBattleStyle(challengerRecord);
-  const opponentStyle = getBattleStyle(opponentRecord);
-  const challengerMaxHp = 120 + challengerPower.defense * 10 + challengerStyle.defenseBonus * 4;
-  const opponentMaxHp = 120 + opponentPower.defense * 10 + opponentStyle.defenseBonus * 4;
+  const challengerWeaponKey = challenge.weaponKeys?.[challenge.challengerId];
+  const opponentWeaponKey = challenge.weaponKeys?.[challenge.opponentId];
+  const challengerStyle = getBattleStyle(challengerRecord, challengerWeaponKey);
+  const opponentStyle = getBattleStyle(opponentRecord, opponentWeaponKey);
+  const challengerPower = challengerStyle.power;
+  const opponentPower = opponentStyle.power;
+  const challengerMaxHp = 140 + challengerPower.defense * 6 + challengerStyle.defenseBonus * 3;
+  const opponentMaxHp = 140 + opponentPower.defense * 6 + opponentStyle.defenseBonus * 3;
   const firstUserId = (challengerPower.luck + challengerStyle.luckBonus) >= (opponentPower.luck + opponentStyle.luckBonus)
     ? challenge.challengerId
     : challenge.opponentId;
@@ -900,6 +1011,10 @@ function createBattleSession(challenge, challengerRecord, opponentRecord) {
     challengerId: challenge.challengerId,
     opponentId: challenge.opponentId,
     wager: challenge.wager,
+    weaponKeys: {
+      [challenge.challengerId]: challengerWeaponKey,
+      [challenge.opponentId]: opponentWeaponKey,
+    },
     createdAt: now,
     updatedAt: now,
     status: 'active',
@@ -955,7 +1070,7 @@ function getSessionEvolutionSummary(style, maxItems = 2) {
     .slice(0, maxItems)
     .map((evolution) => {
       const enhanceText = evolution.enhanceLevel > 0 ? ` +${evolution.enhanceLevel}` : '';
-      return `${formatItemGradeLabel(evolution.grade)} ${evolution.name} Lv.${evolution.level}${enhanceText} 내구도 ${evolution.durability}/${evolution.maxDurability}`;
+      return `${formatItemGradeLabel(evolution.grade)} ${evolution.name} Lv.${evolution.level}${enhanceText} 내구도 ${evolution.durability}/${evolution.maxDurability} · ${formatStatLine(getWeaponBattlePower(evolution))}`;
     })
     .join(', ');
 }
@@ -978,12 +1093,12 @@ function resolveBattleAction(session, actorId, action) {
   const round = Math.max(1, Math.ceil(session.turnNumber / 2));
 
   if (action === 'guard') {
-    const guardAmount = 12 + actorPower.defense * 3 + actorStyle.defenseBonus * 2 + randomInt(0, Math.max(2, actorPower.luck));
+    const guardAmount = 16 + Math.floor(actorPower.defense * 1.2) + actorStyle.defenseBonus + randomInt(0, Math.max(2, Math.floor(actorPower.luck * 0.5)));
     session.shields[actorId] = Math.min(999, (session.shields[actorId] || 0) + guardAmount);
     return `${getBattleDisplayName(actorId, records)}님이 방어 자세를 잡았습니다. 다음 피해를 ${guardAmount}만큼 흡수합니다.`;
   }
 
-  const luckRoll = randomInt(0, Math.max(1, actorPower.luck + actorStyle.luckBonus));
+  const luckRoll = randomInt(0, Math.max(1, Math.floor((actorPower.luck + actorStyle.luckBonus) * 0.55)));
   const evolution = pickBattleEvolution(actorStyle, round - 1, luckRoll);
   const definition = evolution.definition;
   const isUltimate = action === 'ultimate';
@@ -1032,12 +1147,12 @@ function resolveBattleAction(session, actorId, action) {
 
   const evolutionLevel = Math.max(1, (evolution.level || 1) + (evolution.enhanceLevel || 0));
   const rawDamage = randomInt(actionConfig.baseMin, actionConfig.baseMax)
-    + actorPower.attack * 3
+    + Math.floor(actorPower.attack * 1.35)
     + actorStyle.attackBonus
-    + evolutionLevel * (isUltimate ? 5 : 2)
+    + evolutionLevel * (isUltimate ? 3 : 1)
     + luckRoll
     + actionConfig.bonus;
-  const mitigation = Math.floor((defenderPower.defense * 1.4) + (defenderStyle.defenseBonus * 0.7));
+  const mitigation = Math.floor((defenderPower.defense * 0.85) + (defenderStyle.defenseBonus * 0.7));
   const beforeShieldDamage = Math.max(1, Math.floor(rawDamage * actionConfig.multiplier) - mitigation);
   const shield = Math.max(0, Math.floor(session.shields[defenderId] || 0));
   const shieldUsed = Math.min(shield, beforeShieldDamage);
@@ -1116,7 +1231,7 @@ function createBattleTurnEmbed(session, finalResult = null) {
       inline: false,
     },
     {
-      name: '전투 스타일',
+      name: '선택 무기',
       value: [
         `<@${session.challengerId}> ${getSessionEvolutionSummary(session.styles[session.challengerId])}`,
         `<@${session.opponentId}> ${getSessionEvolutionSummary(session.styles[session.opponentId])}`,
@@ -1149,8 +1264,8 @@ function createBattleTurnEmbed(session, finalResult = null) {
     embed.addFields({
       name: '내구도 감소',
       value: [
-        `<@${finalResult.winnerId}> 아이템 ${finalResult.durabilityLoss.winnerItemsChanged}개 -${finalResult.durabilityLoss.winner}`,
-        `<@${finalResult.loserId}> 아이템 ${finalResult.durabilityLoss.loserItemsChanged}개 -${finalResult.durabilityLoss.loser}`,
+        `<@${finalResult.winnerId}> 선택 무기 ${finalResult.durabilityLoss.winnerItemsChanged}개 -${finalResult.durabilityLoss.winner}`,
+        `<@${finalResult.loserId}> 선택 무기 ${finalResult.durabilityLoss.loserItemsChanged}개 -${finalResult.durabilityLoss.loser}`,
       ].join('\n'),
       inline: false,
     });
@@ -1312,6 +1427,56 @@ function findUserEvolution(user, rawName) {
   );
 }
 
+function createAutocompleteChoices(items, focusedValue, buildChoice) {
+  const query = normalizeKey(focusedValue);
+  return items
+    .map(buildChoice)
+    .filter((choice) => choice?.name && choice?.value)
+    .filter((choice) => {
+      if (!query) {
+        return true;
+      }
+
+      return normalizeKey(choice.name).includes(query) || normalizeKey(choice.value).includes(query);
+    })
+    .slice(0, 25)
+    .map((choice) => ({
+      name: truncateText(choice.name, 100),
+      value: truncateText(choice.value, 100),
+    }));
+}
+
+function getInventoryAutocompleteChoices(user, focusedValue) {
+  return createAutocompleteChoices(getInventoryItems(user), focusedValue, (item) => {
+    const grade = getItemGradeConfig(getItemEvolution(item.name).grade);
+    return {
+      name: `${formatItemGradeLabel(grade)} ${item.name} x${item.count}`,
+      value: item.name,
+    };
+  });
+}
+
+function getEvolutionAutocompleteChoices(user, focusedValue, damagedOnly = false) {
+  const evolutions = getUserEvolutions(user).filter((evolution) =>
+    !damagedOnly || evolution.durability < evolution.maxDurability
+  );
+
+  return createAutocompleteChoices(evolutions, focusedValue, (evolution) => {
+    const enhanceText = evolution.enhanceLevel > 0 ? ` +${evolution.enhanceLevel}` : '';
+    return {
+      name: `${formatItemGradeLabel(evolution.grade)} ${evolution.itemName}${enhanceText} ${evolution.durability}/${evolution.maxDurability}`,
+      value: evolution.itemName,
+    };
+  });
+}
+
+function getShopAutocompleteChoices(focusedValue) {
+  return createAutocompleteChoices(getShopItems(), focusedValue, (item) => ({
+    name: `${formatItemGradeLabel(item.grade)} ${item.name} · ${formatCoins(item.price)}`,
+    value: item.name,
+  }));
+}
+
 function getEnhancementPowerGain(evolution) {
   const bias = getEvolutionStatBias(evolution.definition);
   const grade = evolution.grade?.key
@@ -1336,12 +1501,16 @@ function subtractPower(user, powerBonus = {}) {
   user.power.luck = Math.max(1, Math.floor((user.power.luck || 1) - (powerBonus.luck || 0)));
 }
 
-function applyBattleDurabilityLoss(user, amount) {
+function applyBattleDurabilityLoss(user, amount, weaponKey = null) {
   const evolutions = user.evolutions && typeof user.evolutions === 'object' ? user.evolutions : {};
   let changed = 0;
 
-  for (const record of Object.values(evolutions)) {
+  for (const [key, record] of Object.entries(evolutions)) {
     if (!record || typeof record !== 'object') {
+      continue;
+    }
+
+    if (weaponKey && key !== weaponKey) {
       continue;
     }
 
@@ -1365,7 +1534,7 @@ function applyBattleDurabilityLoss(user, amount) {
 
 function createInventoryEmbed(target, user) {
   const items = getInventoryItems(user);
-  const power = getUserPower(user);
+  const bestWeapon = getBestBattleWeapon(user);
   const stats = user.stats || {};
   const displayName = getDisplayName(target, user);
   const totalCount = items.reduce((sum, item) => sum + item.count, 0);
@@ -1391,9 +1560,12 @@ function createInventoryEmbed(target, user) {
       {
         name: '성장 요약',
         value: [
-          `능력치: ${formatStatLine(power)}`,
+          bestWeapon
+            ? `대표 무기: ${formatItemGradeLabel(bestWeapon.evolution.grade)} ${bestWeapon.evolution.itemName} · ${formatStatLine(bestWeapon.power)}`
+            : '대표 무기: 전투 가능 무기 없음',
           `방지권: ${user.protectionTickets || 0}장`,
           `아이템 사용: ${stats.itemsUsed || 0}회`,
+          `상점 구매: ${stats.itemShopPurchases || 0}개 / 수리 ${stats.itemRepairCount || 0}회`,
         ].join('\n'),
         inline: false,
       },
@@ -1422,11 +1594,11 @@ function createInventoryEmbed(target, user) {
 }
 
 function createStatusEmbed(target, user) {
-  const power = getUserPower(user);
   const evolutions = getUserEvolutions(user);
   const stats = user.stats || {};
   const displayName = getDisplayName(target, user);
   const activeEvolutions = evolutions.filter((evolution) => evolution.durability > 0);
+  const bestWeapon = getBestBattleWeapon(user);
   const totalDurability = evolutions.reduce((sum, evolution) => sum + evolution.durability, 0);
   const maxDurability = evolutions.reduce((sum, evolution) => sum + evolution.maxDurability, 0);
   const evolutionLines = evolutions.length > 0
@@ -1435,9 +1607,10 @@ function createStatusEmbed(target, user) {
       const nextCost = getItemEnhancementCost(evolution.grade.key, evolution.enhanceLevel);
       const nextChance = getItemEnhancementChance(evolution.grade.key, evolution.enhanceLevel);
       const usable = evolution.durability > 0 ? '사용 가능' : '파손';
+      const weaponPower = evolution.durability > 0 ? getWeaponBattlePower(evolution) : null;
       return [
         `${index + 1}. ${formatItemGradeLabel(evolution.grade)} ${evolution.itemName} ${enhanceText} (${usable})`,
-        `${formatDurabilityLine(evolution.durability, evolution.maxDurability)} · 다음 강화 ${formatChance(nextChance)} / ${formatCoins(nextCost)}`,
+        `${formatDurabilityLine(evolution.durability, evolution.maxDurability)} · ${weaponPower ? formatStatLine(weaponPower) : '전투 불가'} · 다음 강화 ${formatChance(nextChance)} / ${formatCoins(nextCost)}`,
       ].join('\n');
     }).join('\n\n')
     : '해금된 진화 아이템이 없습니다. `/아이템사용`으로 먼저 해금해 주세요.';
@@ -1455,7 +1628,13 @@ function createStatusEmbed(target, user) {
   })
     .addFields(
       { name: '자산', value: `${formatCoins(user.balance || 0)}\n방지권 ${user.protectionTickets || 0}장`, inline: true },
-      { name: '능력치', value: formatStatLine(power), inline: true },
+      {
+        name: '대표 무기',
+        value: bestWeapon
+          ? `${formatItemGradeLabel(bestWeapon.evolution.grade)} ${bestWeapon.evolution.itemName}\n${formatStatLine(bestWeapon.power)}`
+          : '전투 가능 무기 없음',
+        inline: true,
+      },
       {
         name: '내구도',
         value: evolutions.length > 0 ? formatDurabilityLine(totalDurability, maxDurability, 12) : '표시할 아이템 없음',
@@ -1471,7 +1650,89 @@ function createStatusEmbed(target, user) {
     );
 }
 
-function createItemUseEmbed(user, item, gain, power, remaining, evolutionRecord, usedCount = 1) {
+function createItemRatesEmbed() {
+  const gradeRates = listItemGradeDropRates();
+  const protectionChance = getFishingProtectionTicketChance();
+  const gradeLines = gradeRates
+    .map((rate) => [
+      `${formatItemGradeLabel(rate.grade)} ${formatChance(rate.chance)}`,
+      `아이템 풀 기준 ${formatChance(rate.itemPoolChance)} · ${rate.itemCount}종`,
+    ].join(' · '))
+    .join('\n');
+
+  return createUiEmbed({
+    color: uiTheme.colors.inventory,
+    title: '아이템 등급별 낚시 확률',
+    description: '아래 확률은 `/낚시` 1회 기준입니다.',
+  })
+    .addFields(
+      { name: '등급별 확률', value: gradeLines || '확률 정보가 없습니다.', inline: false },
+      { name: '특수 획득', value: `강화 방지권 ${formatChance(protectionChance)}`, inline: false },
+    );
+}
+
+function createShopEmbed(user) {
+  const shopItems = getShopItems();
+  const grouped = new Map();
+
+  for (const item of shopItems) {
+    const key = item.grade.key;
+    const current = grouped.get(key) || {
+      grade: item.grade,
+      lines: [],
+    };
+    current.lines.push(`${item.name} · ${formatCoins(item.price)}`);
+    grouped.set(key, current);
+  }
+
+  const embed = createUiEmbed({
+    color: uiTheme.colors.economy,
+    title: '아이템 상점',
+    description: [
+      `보유 잔액: ${formatCoins(user.balance || 0)}`,
+      '상점 아이템은 낚시 평균 가치보다 비싸게 판매됩니다.',
+    ].join('\n'),
+  });
+
+  for (const group of grouped.values()) {
+    embed.addFields({
+      name: formatItemGradeLabel(group.grade),
+      value: truncateText(group.lines.join('\n'), 1024),
+      inline: false,
+    });
+  }
+
+  return embed;
+}
+
+function createItemPurchaseEmbed({ user, item, quantity, totalCost, balance, inventoryItem }) {
+  return createUiEmbed({
+    color: getItemGradeColor(item.grade, uiTheme.colors.economy),
+    title: '아이템 구매 완료',
+    description: `${user}님이 **${formatItemGradeLabel(item.grade)} ${item.name}** ${quantity}개를 구매했습니다.`,
+  })
+    .addFields(
+      { name: '결제 금액', value: formatCoins(totalCost), inline: true },
+      { name: '남은 잔액', value: formatCoins(balance), inline: true },
+      { name: '보관 수량', value: `${inventoryItem?.count || quantity}개`, inline: true },
+    );
+}
+
+function createItemRepairEmbed({ user, evolution, cost, balance, previousDurability, nextDurability }) {
+  const grade = normalizeGradeConfig(evolution.grade);
+  return createUiEmbed({
+    color: getItemGradeColor(grade, uiTheme.colors.success),
+    title: '아이템 수리 완료',
+    description: `${user}님이 **${formatItemGradeLabel(grade)} ${evolution.itemName}**을 수리했습니다.`,
+  })
+    .addFields(
+      { name: '내구도', value: `${previousDurability}/${evolution.maxDurability} -> ${nextDurability}/${evolution.maxDurability}`, inline: false },
+      { name: '수리 비용', value: formatCoins(cost), inline: true },
+      { name: '남은 잔액', value: formatCoins(balance), inline: true },
+    );
+}
+
+function createItemUseEmbed(user, item, gain, weaponPower, remaining, evolutionRecord, usedCount = 1) {
   const grade = getItemGradeConfig(evolutionRecord.grade);
   const enhanceLevel = Number.isFinite(evolutionRecord.enhanceLevel)
     ? Math.max(0, Math.floor(evolutionRecord.enhanceLevel))
@@ -1486,8 +1747,8 @@ function createItemUseEmbed(user, item, gain, power, remaining, evolutionRecord,
     description: `${user}님이 **${formatItemGradeLabel(grade)} ${item.name}** ${usedLabel} **${evolutionRecord.name} Lv.${evolutionRecord.level}**로 진화했습니다.`,
   })
     .addFields(
-      { name: '능력치 증가', value: `공격 +${gain.attack} / 방어 +${gain.defense} / 행운 +${gain.luck}`, inline: false },
-      { name: '현재 수치', value: formatStatLine(power), inline: false },
+      { name: '무기 성장', value: `레벨 +${usedCount} / 현재 Lv.${evolutionRecord.level}`, inline: false },
+      { name: '전투 능력', value: formatStatLine(weaponPower), inline: false },
       { name: '전투 기술', value: `${gain.evolution.attack}\n궁극기: ${gain.evolution.ultimate}`, inline: false },
       { name: '다음 강화', value: `${formatCoins(nextCost)} / 성공률 ${formatChance(nextChance)}`, inline: true },
       { name: '사용 개수', value: `${usedCount}개`, inline: true },
@@ -1506,7 +1767,7 @@ function createItemEnhanceEmbed({
   protectedByTicket,
   destroyed,
   protectionTickets,
-  power,
+  weaponPower,
   gain,
   balance,
 }) {
@@ -1534,8 +1795,8 @@ function createItemEnhanceEmbed({
 
   if (success) {
     embed.addFields(
-      { name: '능력치 증가', value: `공격 +${gain.attack} / 방어 +${gain.defense} / 행운 +${gain.luck}`, inline: false },
-      { name: '현재 수치', value: formatStatLine(power), inline: false },
+      { name: '강화 성장치', value: `공격 계수 +${gain.attack} / 방어 계수 +${gain.defense} / 행운 계수 +${gain.luck}`, inline: false },
+      { name: '현재 무기 전투 능력', value: weaponPower ? formatStatLine(weaponPower) : '무기 파괴', inline: false },
     );
   } else {
     embed.addFields({
@@ -1636,6 +1897,7 @@ function createFishingEmbed(stage, payload = {}) {
 }
 
 function createBattleChallengeEmbed(challenge) {
+  const weaponKeys = challenge.weaponKeys || {};
   const embed = createUiEmbed({
     color: uiTheme.colors.warning,
     title: '결투 신청',
@@ -1645,7 +1907,15 @@ function createBattleChallengeEmbed(challenge) {
       { name: '도전자', value: `<@${challenge.challengerId}>`, inline: true },
       { name: '상대', value: `<@${challenge.opponentId}>`, inline: true },
       { name: '베팅 코인', value: challenge.wager > 0 ? formatCoins(challenge.wager) : '없음', inline: true },
-      { name: '수락 제한', value: '5분 안에 상대만 수락할 수 있습니다.', inline: false },
+      {
+        name: '무기 선택',
+        value: [
+          `<@${challenge.challengerId}> ${weaponKeys[challenge.challengerId] ? '선택 완료' : '미선택'}`,
+          `<@${challenge.opponentId}> ${weaponKeys[challenge.opponentId] ? '선택 완료' : '미선택'}`,
+        ].join('\n'),
+        inline: false,
+      },
+      { name: '수락 제한', value: '5분 안에 양쪽이 무기를 고른 뒤 상대가 수락할 수 있습니다.', inline: false },
     );
 
   return embed;
@@ -1655,6 +1925,10 @@ function createBattleChallengeComponents(challengeId) {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
+        .setCustomId(battleCustomId('equip', challengeId))
+        .setLabel('무기 선택')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
         .setCustomId(battleCustomId('accept', challengeId))
         .setLabel('결투 수락')
         .setStyle(ButtonStyle.Success),
@@ -1662,6 +1936,34 @@ function createBattleChallengeComponents(challengeId) {
         .setCustomId(battleCustomId('decline', challengeId))
         .setLabel('거절')
         .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
+function createBattleWeaponSelectComponents(challengeId, user) {
+  const options = getUserEvolutions(user)
+    .filter((evolution) => evolution.durability > 0)
+    .slice(0, 25)
+    .map((evolution) => {
+      const power = getWeaponBattlePower(evolution);
+      const enhanceText = evolution.enhanceLevel > 0 ? ` +${evolution.enhanceLevel}` : '';
+      return {
+        label: truncateText(`${evolution.itemName}${enhanceText}`, 100),
+        value: evolution.key,
+        description: truncateText(`${evolution.grade.label} · 공격 ${power.attack} / 방어 ${power.defense} / 행운 ${power.luck}`, 100),
+      };
+    });
+
+  if (options.length === 0) {
+    return [];
+  }
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(battleCustomId('weapon', challengeId))
+        .setPlaceholder('이번 결투에 사용할 무기 선택')
+        .addOptions(options),
     ),
   ];
 }
@@ -2570,6 +2872,7 @@ async function handleHelp(interaction) {
         ['/지급', '관리자 노코인 지급'],
         ['/낚시', '아이템과 노코인 획득'],
         ['/구걸', '5분마다 노코인 획득'],
+        ['/상점', '비싼 아이템 구매 목록'],
       ]),
       inline: false,
     },
@@ -2580,6 +2883,9 @@ async function handleHelp(interaction) {
         ['/상태', '내구도와 다음 강화 확률'],
         ['/아이템사용', '아이템으로 유저 진화'],
         ['/아이템강화', '노코인으로 강화 도전'],
+        ['/아이템확률', '등급별 낚시 확률'],
+        ['/아이템구매', '상점 아이템 구매'],
+        ['/아이템수리', '진화 아이템 내구도 회복'],
       ]),
       inline: false,
     },
@@ -2633,7 +2939,7 @@ async function handleWallet(interaction) {
     return {
       balance: user.balance,
       stats: user.stats,
-      power: getUserPower(user),
+      bestWeapon: getBestBattleWeapon(user),
       itemCount: getInventoryItems(user).reduce((sum, item) => sum + item.count, 0),
       protectionTickets: user.protectionTickets,
     };
@@ -2649,7 +2955,13 @@ async function handleWallet(interaction) {
       { name: '잔액', value: formatCoins(result.balance), inline: true },
       { name: '보관 아이템', value: `${result.itemCount}개`, inline: true },
       { name: '방지권', value: `${result.protectionTickets}장`, inline: true },
-      { name: '강화 수치', value: formatStatLine(result.power), inline: false },
+      {
+        name: '대표 무기 전투력',
+        value: result.bestWeapon
+          ? `${formatItemGradeLabel(result.bestWeapon.evolution.grade)} ${result.bestWeapon.evolution.itemName}\n${formatStatLine(result.bestWeapon.power)}`
+          : '전투 가능 무기 없음',
+        inline: false,
+      },
       {
         name: '활동 요약',
         value: [
@@ -2757,6 +3069,188 @@ async function handleStatus(interaction) {
   });
 }
 
+async function handleItemRates(interaction) {
+  await reply(interaction, {
+    embeds: [createItemRatesEmbed()],
+  });
+}
+
+async function handleShop(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+    return { user };
+  });
+
+  await reply(interaction, {
+    embeds: [createShopEmbed(result.user)],
+  });
+}
+
+async function handleBuyItem(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const itemName = interaction.options.getString('아이템', true).trim();
+  const quantity = interaction.options.getInteger('수량') || 1;
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+    const shopItem = findShopItem(itemName);
+
+    if (!shopItem) {
+      const suggestions = getShopItems()
+        .slice(0, 5)
+        .map((item) => item.name)
+        .join(', ');
+      return {
+        ok: false,
+        reason: `상점에서 해당 아이템을 찾을 수 없습니다. 예: ${suggestions}`,
+      };
+    }
+
+    const totalCost = shopItem.price * quantity;
+    if (user.balance < totalCost) {
+      return {
+        ok: false,
+        reason: `노코인이 부족합니다. 필요: ${formatCoins(totalCost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+      };
+    }
+
+    user.balance -= totalCost;
+    user.stats.itemShopPurchases += quantity;
+    user.stats.itemShopSpent += totalCost;
+
+    let inventoryItem = null;
+    for (let index = 0; index < quantity; index += 1) {
+      inventoryItem = addInventoryItem(user, {
+        label: shopItem.name,
+        amount: shopItem.averageAmount,
+        baseAmount: shopItem.averageBaseAmount,
+        weight: shopItem.weight,
+      });
+    }
+
+    return {
+      ok: true,
+      item: shopItem,
+      quantity,
+      totalCost,
+      balance: user.balance,
+      inventoryItem,
+    };
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await reply(interaction, {
+    embeds: [
+      createItemPurchaseEmbed({
+        user: interaction.user,
+        item: result.item,
+        quantity: result.quantity,
+        totalCost: result.totalCost,
+        balance: result.balance,
+        inventoryItem: result.inventoryItem,
+      }),
+    ],
+  });
+}
+
+async function handleRepairItem(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const itemName = interaction.options.getString('아이템', true).trim();
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+    const evolution = findUserEvolution(user, itemName);
+
+    if (!evolution) {
+      const suggestions = getUserEvolutions(user)
+        .slice(0, 5)
+        .map((item) => item.itemName)
+        .join(', ');
+      return {
+        ok: false,
+        reason: suggestions
+          ? `수리할 진화 아이템을 찾을 수 없습니다. 예: ${suggestions}`
+          : '수리할 진화 아이템이 없습니다. 먼저 `/아이템사용`으로 진화를 해금해 주세요.',
+      };
+    }
+
+    const cost = getItemRepairCost(evolution);
+    if (cost <= 0) {
+      return {
+        ok: false,
+        reason: `${evolution.itemName}은 이미 내구도가 가득 찼습니다.`,
+      };
+    }
+
+    if (user.balance < cost) {
+      return {
+        ok: false,
+        reason: `노코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+      };
+    }
+
+    const current = user.evolutions[evolution.key];
+    const previousDurability = evolution.durability;
+    current.maxDurability = evolution.maxDurability;
+    current.durability = evolution.maxDurability;
+    current.lastRepairedAt = new Date().toISOString();
+    user.balance -= cost;
+    user.stats.itemRepairCount += 1;
+    user.stats.itemRepairSpent += cost;
+
+    return {
+      ok: true,
+      evolution: {
+        ...evolution,
+        durability: current.durability,
+      },
+      previousDurability,
+      nextDurability: current.durability,
+      cost,
+      balance: user.balance,
+    };
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await reply(interaction, {
+    embeds: [
+      createItemRepairEmbed({
+        user: interaction.user,
+        evolution: result.evolution,
+        cost: result.cost,
+        balance: result.balance,
+        previousDurability: result.previousDurability,
+        nextDurability: result.nextDurability,
+      }),
+    ],
+  });
+}
+
 async function handleUseItem(interaction) {
   if (!(await requireGuild(interaction))) {
     return;
@@ -2791,11 +3285,9 @@ async function handleUseItem(interaction) {
       defense: baseGain.defense * useCount,
       luck: baseGain.luck * useCount,
     };
-    user.power.attack += gain.attack;
-    user.power.defense += gain.defense;
-    user.power.luck += gain.luck;
     user.stats.itemsUsed += useCount;
     const evolutionRecord = applyItemEvolution(user, item, gain.evolution, useCount);
+    const evolvedWeapon = findUserEvolutionByKey(user, item.key);
 
     const current = user.inventory[item.key];
     if (current && typeof current === 'object') {
@@ -2827,7 +3319,7 @@ async function handleUseItem(interaction) {
       gain,
       evolutionRecord,
       usedCount: useCount,
-      power: getUserPower(user),
+      weaponPower: getWeaponBattlePower(evolvedWeapon),
       remaining,
     };
   });
@@ -2846,7 +3338,7 @@ async function handleUseItem(interaction) {
         interaction.user,
         result.item,
         result.gain,
-        result.power,
+        result.weaponPower,
         result.remaining,
         result.evolutionRecord,
         result.usedCount,
@@ -2914,9 +3406,6 @@ async function handleEnhanceItem(interaction) {
       current.enhanceSuccesses = Math.max(0, Math.floor(current.enhanceSuccesses || 0)) + 1;
       current.lastEnhancedAt = new Date().toISOString();
       user.stats.itemEnhanceSuccesses += 1;
-      user.power.attack += gain.attack;
-      user.power.defense += gain.defense;
-      user.power.luck += gain.luck;
       current.enhancePowerBonus.attack = Math.max(0, Math.floor(current.enhancePowerBonus.attack || 0)) + gain.attack;
       current.enhancePowerBonus.defense = Math.max(0, Math.floor(current.enhancePowerBonus.defense || 0)) + gain.defense;
       current.enhancePowerBonus.luck = Math.max(0, Math.floor(current.enhancePowerBonus.luck || 0)) + gain.luck;
@@ -2928,11 +3417,12 @@ async function handleEnhanceItem(interaction) {
         current.enhanceLevel = previousLevel;
         current.lastProtectedAt = new Date().toISOString();
       } else {
-        subtractPower(user, current.enhancePowerBonus);
         delete user.evolutions[evolution.key];
         destroyed = true;
       }
     }
+
+    const currentWeapon = destroyed ? null : findUserEvolutionByKey(user, evolution.key);
 
     return {
       ok: true,
@@ -2950,7 +3440,7 @@ async function handleEnhanceItem(interaction) {
       previousLevel,
       nextLevel: destroyed ? 0 : current.enhanceLevel,
       gain,
-      power: getUserPower(user),
+      weaponPower: currentWeapon ? getWeaponBattlePower(currentWeapon) : null,
       balance: user.balance,
     };
   });
@@ -2976,7 +3466,7 @@ async function handleEnhanceItem(interaction) {
         protectedByTicket: result.protectedByTicket,
         destroyed: result.destroyed,
         protectionTickets: result.protectionTickets,
-        power: result.power,
+        weaponPower: result.weaponPower,
         gain: result.gain,
         balance: result.balance,
       }),
@@ -3012,6 +3502,22 @@ async function handleBattle(interaction) {
     const guild = store.ensureGuild(data, interaction.guildId);
     const challengerRecord = store.ensureUser(guild, interaction.user);
     const opponentRecord = store.ensureUser(guild, opponent);
+    const challengerWeapons = getUserEvolutions(challengerRecord).filter((evolution) => evolution.durability > 0);
+    const opponentWeapons = getUserEvolutions(opponentRecord).filter((evolution) => evolution.durability > 0);
+
+    if (challengerWeapons.length === 0) {
+      return {
+        ok: false,
+        reason: '신청자가 사용할 수 있는 무기가 없습니다. `/아이템사용`으로 아이템 진화를 해금하거나 `/아이템수리`로 수리해 주세요.',
+      };
+    }
+
+    if (opponentWeapons.length === 0) {
+      return {
+        ok: false,
+        reason: '상대가 사용할 수 있는 무기가 없습니다. 상대가 `/아이템사용`으로 아이템 진화를 해금하거나 `/아이템수리`로 수리해야 합니다.',
+      };
+    }
 
     if (wager > 0 && challengerRecord.balance < wager) {
       return {
@@ -3046,6 +3552,7 @@ async function handleBattle(interaction) {
     challengerId: interaction.user.id,
     opponentId: opponent.id,
     wager,
+    weaponKeys: {},
     createdAt: Date.now(),
   };
   battleChallenges.set(challengeId, challenge);
@@ -3057,13 +3564,100 @@ async function handleBattle(interaction) {
   });
 }
 
+function isBattleParticipant(challenge, userId) {
+  return userId === challenge.challengerId || userId === challenge.opponentId;
+}
+
+async function handleBattleEquipButton(interaction, parsed, challenge) {
+  if (!isBattleParticipant(challenge, interaction.user.id)) {
+    await interaction.reply({
+      content: '이 결투의 참가자만 무기를 선택할 수 있습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+    const components = createBattleWeaponSelectComponents(parsed.challengeId, user);
+
+    if (components.length === 0) {
+      return {
+        ok: false,
+        reason: '사용 가능한 무기가 없습니다. `/아이템사용`으로 진화를 해금하거나 `/아이템수리`로 내구도를 회복해 주세요.',
+      };
+    }
+
+    return { ok: true, components };
+  });
+
+  await interaction.reply({
+    content: result.ok ? '이번 결투에 사용할 무기를 골라 주세요.' : result.reason,
+    components: result.ok ? result.components : [],
+    flags: MessageFlags.Ephemeral,
+  });
+  return true;
+}
+
+async function handleBattleWeaponSelect(interaction, parsed, challenge) {
+  if (!isBattleParticipant(challenge, interaction.user.id)) {
+    await interaction.update({
+      content: '이 결투의 참가자만 무기를 선택할 수 있습니다.',
+      components: [],
+    });
+    return true;
+  }
+
+  const weaponKey = interaction.values[0];
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+    const weapon = findUserEvolutionByKey(user, weaponKey);
+
+    if (!weapon || weapon.durability <= 0) {
+      return {
+        ok: false,
+        reason: '선택한 무기를 사용할 수 없습니다. 다른 무기를 고르거나 수리해 주세요.',
+      };
+    }
+
+    return {
+      ok: true,
+      weapon,
+      power: getWeaponBattlePower(weapon),
+    };
+  });
+
+  if (!result.ok) {
+    await interaction.update({
+      content: result.reason,
+      components: [],
+    });
+    return true;
+  }
+
+  challenge.weaponKeys ||= {};
+  challenge.weaponKeys[interaction.user.id] = weaponKey;
+
+  await interaction.update({
+    content: [
+      `무기 선택 완료: **${formatItemGradeLabel(result.weapon.grade)} ${result.weapon.itemName}**`,
+      `전투 능력: ${formatStatLine(result.power)}`,
+      '양쪽 모두 선택한 뒤 상대가 공개 메시지의 `결투 수락`을 누르면 시작됩니다.',
+    ].join('\n'),
+    components: [],
+  });
+  return true;
+}
+
 async function handleBattleUiInteraction(interaction) {
   const parsed = parseBattleCustomId(interaction.customId);
   if (!parsed) {
     return false;
   }
 
-  if (!interaction.isButton()) {
+  if (!interaction.isButton() && !interaction.isStringSelectMenu()) {
     return false;
   }
 
@@ -3072,6 +3666,9 @@ async function handleBattleUiInteraction(interaction) {
   }
 
   if (parsed.action === 'move') {
+    if (!interaction.isButton()) {
+      return false;
+    }
     return handleBattleMoveInteraction(interaction, parsed);
   }
 
@@ -3084,9 +3681,21 @@ async function handleBattleUiInteraction(interaction) {
     return true;
   }
 
+  if (interaction.isButton() && parsed.action === 'equip') {
+    return handleBattleEquipButton(interaction, parsed, challenge);
+  }
+
+  if (interaction.isStringSelectMenu() && parsed.action === 'weapon') {
+    return handleBattleWeaponSelect(interaction, parsed, challenge);
+  }
+
+  if (!interaction.isButton()) {
+    return false;
+  }
+
   if (interaction.user.id !== challenge.opponentId) {
     await interaction.reply({
-      content: '이 결투는 지목된 상대만 수락하거나 거절할 수 있습니다.',
+      content: '결투 수락과 거절은 지목된 상대만 할 수 있습니다. 무기 선택은 참가자 둘 다 가능합니다.',
       flags: MessageFlags.Ephemeral,
     });
     return true;
@@ -3109,6 +3718,16 @@ async function handleBattleUiInteraction(interaction) {
   }
 
   if (parsed.action === 'accept') {
+    const missingWeaponUserIds = [challenge.challengerId, challenge.opponentId]
+      .filter((userId) => !challenge.weaponKeys?.[userId]);
+    if (missingWeaponUserIds.length > 0) {
+      await interaction.reply({
+        content: `결투 전에 양쪽 모두 무기를 선택해야 합니다. 미선택: ${missingWeaponUserIds.map((userId) => `<@${userId}>`).join(', ')}`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return true;
+    }
+
     battleChallenges.delete(parsed.challengeId);
     await interaction.deferUpdate();
 
@@ -3116,6 +3735,22 @@ async function handleBattleUiInteraction(interaction) {
       const guild = store.ensureGuild(data, interaction.guildId);
       const challengerRecord = store.ensureUser(guild, challenge.challengerId);
       const opponentRecord = store.ensureUser(guild, challenge.opponentId);
+      const challengerWeapon = findUserEvolutionByKey(challengerRecord, challenge.weaponKeys[challenge.challengerId]);
+      const opponentWeapon = findUserEvolutionByKey(opponentRecord, challenge.weaponKeys[challenge.opponentId]);
+
+      if (!challengerWeapon || challengerWeapon.durability <= 0) {
+        return {
+          ok: false,
+          reason: '신청자의 선택 무기가 파손되었거나 사라져 결투가 취소되었습니다.',
+        };
+      }
+
+      if (!opponentWeapon || opponentWeapon.durability <= 0) {
+        return {
+          ok: false,
+          reason: '상대의 선택 무기가 파손되었거나 사라져 결투가 취소되었습니다.',
+        };
+      }
 
       if (challenge.wager > 0 && challengerRecord.balance < challenge.wager) {
         return {
@@ -3183,8 +3818,8 @@ async function settleBattleSession(session) {
     loser.stats.battleProfit -= session.wager;
     const winnerDurabilityLoss = 3;
     const loserDurabilityLoss = 6;
-    const winnerItemsChanged = applyBattleDurabilityLoss(winner, winnerDurabilityLoss);
-    const loserItemsChanged = applyBattleDurabilityLoss(loser, loserDurabilityLoss);
+    const winnerItemsChanged = applyBattleDurabilityLoss(winner, winnerDurabilityLoss, session.weaponKeys?.[session.winnerId]);
+    const loserItemsChanged = applyBattleDurabilityLoss(loser, loserDurabilityLoss, session.weaponKeys?.[session.loserId]);
 
     return {
       ok: true,
@@ -4389,6 +5024,45 @@ async function handleUpdate(interaction) {
   await reply(interaction, `${target} 명령어 ${result.count}개를 동기화했습니다.${clearedText}`);
 }
 
+async function handleAutocomplete(interaction) {
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== '아이템') {
+    await interaction.respond([]);
+    return;
+  }
+
+  if (interaction.commandName === '아이템구매') {
+    await interaction.respond(getShopAutocompleteChoices(focused.value));
+    return;
+  }
+
+  if (!interaction.guildId) {
+    await interaction.respond([]);
+    return;
+  }
+
+  const choices = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+
+    if (interaction.commandName === '아이템사용') {
+      return getInventoryAutocompleteChoices(user, focused.value);
+    }
+
+    if (interaction.commandName === '아이템강화') {
+      return getEvolutionAutocompleteChoices(user, focused.value);
+    }
+
+    if (interaction.commandName === '아이템수리') {
+      return getEvolutionAutocompleteChoices(user, focused.value, true);
+    }
+
+    return [];
+  });
+
+  await interaction.respond(choices);
+}
+
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
 
@@ -4422,6 +5096,11 @@ client.once(Events.ClientReady, async (readyClient) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (interaction.isAutocomplete()) {
+      await handleAutocomplete(interaction);
+      return;
+    }
+
     if (interaction.isStringSelectMenu() || interaction.isButton() || interaction.isModalSubmit()) {
       const handledBet = await handleBetUiInteraction(interaction);
       if (handledBet) {
@@ -4482,6 +5161,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case '상태':
         await handleStatus(interaction);
         break;
+      case '아이템확률':
+        await handleItemRates(interaction);
+        break;
+      case '상점':
+        await handleShop(interaction);
+        break;
+      case '아이템구매':
+        await handleBuyItem(interaction);
+        break;
+      case '아이템수리':
+        await handleRepairItem(interaction);
+        break;
       case '아이템사용':
         await handleUseItem(interaction);
         break;
@@ -4520,6 +5211,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   } catch (error) {
     console.error(error);
+    if (interaction.isAutocomplete()) {
+      try {
+        await interaction.respond([]);
+      } catch (autocompleteError) {
+        if (!isExpiredInteractionError(autocompleteError)) {
+          console.warn(`Failed to send autocomplete fallback: ${autocompleteError.message}`);
+        }
+      }
+      return;
+    }
+
     const message = '명령어 처리 중 오류가 발생했습니다. 콘솔 로그를 확인해 주세요.';
     await safeErrorReply(interaction, message);
   }

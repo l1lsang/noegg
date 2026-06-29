@@ -400,6 +400,56 @@ function getItemEvolution(itemName) {
   };
 }
 
+function listFishingItems(multiplier = 1) {
+  const totalWeight = FISHING_TABLE.reduce((sum, item) => sum + item.weight, 0);
+
+  return FISHING_TABLE.map((item) => {
+    const evolution = getItemEvolution(item.name);
+    const grade = getItemGradeConfig(evolution.grade);
+    const averageBaseAmount = Math.floor((item.min + item.max) / 2);
+    return {
+      name: item.name,
+      min: scaleAmount(item.min, multiplier),
+      max: scaleAmount(item.max, multiplier),
+      averageAmount: scaleAmount(averageBaseAmount, multiplier),
+      averageBaseAmount,
+      weight: item.weight,
+      chance: (1 - PROTECTION_TICKET_CHANCE) * (item.weight / totalWeight),
+      itemPoolChance: item.weight / totalWeight,
+      grade,
+      evolution,
+    };
+  });
+}
+
+function listItemGradeDropRates() {
+  const totalWeight = FISHING_TABLE.reduce((sum, item) => sum + item.weight, 0);
+  const grouped = new Map();
+
+  for (const item of FISHING_TABLE) {
+    const evolution = getItemEvolution(item.name);
+    const grade = getItemGradeConfig(evolution.grade);
+    const current = grouped.get(grade.key) || {
+      grade,
+      weight: 0,
+      itemCount: 0,
+    };
+    current.weight += item.weight;
+    current.itemCount += 1;
+    grouped.set(grade.key, current);
+  }
+
+  return Array.from(grouped.values()).map((entry) => ({
+    ...entry,
+    chance: (1 - PROTECTION_TICKET_CHANCE) * (entry.weight / totalWeight),
+    itemPoolChance: entry.weight / totalWeight,
+  }));
+}
+
+function getFishingProtectionTicketChance() {
+  return PROTECTION_TICKET_CHANCE;
+}
+
 function listItemEvolutions() {
   return ITEM_EVOLUTION_DEFINITIONS.slice();
 }
@@ -414,6 +464,9 @@ module.exports = {
   getItemEnhancementCost,
   getItemEvolution,
   getItemGradeConfig,
+  getFishingProtectionTicketChance,
+  listFishingItems,
+  listItemGradeDropRates,
   listItemEvolutions,
   nextBetId,
   normalizeKey,

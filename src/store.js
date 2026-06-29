@@ -97,6 +97,10 @@ class BaseStore {
         itemEnhanceAttempts: 0,
         itemEnhanceSuccesses: 0,
         itemEnhanceSpent: 0,
+        itemShopPurchases: 0,
+        itemShopSpent: 0,
+        itemRepairCount: 0,
+        itemRepairSpent: 0,
         protectionTicketsFound: 0,
         protectionTicketsUsed: 0,
         grantsReceived: 0,
@@ -133,6 +137,10 @@ class BaseStore {
     record.stats.itemEnhanceAttempts ||= 0;
     record.stats.itemEnhanceSuccesses ||= 0;
     record.stats.itemEnhanceSpent ||= 0;
+    record.stats.itemShopPurchases ||= 0;
+    record.stats.itemShopSpent ||= 0;
+    record.stats.itemRepairCount ||= 0;
+    record.stats.itemRepairSpent ||= 0;
     record.stats.protectionTicketsFound ||= 0;
     record.stats.protectionTicketsUsed ||= 0;
     record.stats.grantsReceived ||= 0;

@@ -166,6 +166,7 @@ function buildCommandData() {
           .setName('아이템')
           .setDescription('사용할 아이템 이름입니다. `/보관함`에서 확인할 수 있습니다.')
           .setRequired(true)
+          .setAutocomplete(true)
           .setMaxLength(80),
       )
       .addBooleanOption((option) =>
@@ -183,6 +184,47 @@ function buildCommandData() {
           .setName('아이템')
           .setDescription('강화할 아이템 이름입니다. `/보관함`에서 확인할 수 있습니다.')
           .setRequired(true)
+          .setAutocomplete(true)
+          .setMaxLength(80),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('아이템확률')
+      .setDescription('낚시 아이템 등급별 획득 확률을 확인합니다.'),
+
+    new SlashCommandBuilder()
+      .setName('상점')
+      .setDescription('노코인으로 살 수 있는 아이템 목록을 확인합니다.'),
+
+    new SlashCommandBuilder()
+      .setName('아이템구매')
+      .setDescription('상점에서 아이템을 구매합니다.')
+      .addStringOption((option) =>
+        option
+          .setName('아이템')
+          .setDescription('구매할 아이템 이름입니다.')
+          .setRequired(true)
+          .setAutocomplete(true)
+          .setMaxLength(80),
+      )
+      .addIntegerOption((option) =>
+        option
+          .setName('수량')
+          .setDescription('구매할 수량입니다.')
+          .setRequired(false)
+          .setMinValue(1)
+          .setMaxValue(100),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('아이템수리')
+      .setDescription('전투로 손상된 진화 아이템 내구도를 수리합니다.')
+      .addStringOption((option) =>
+        option
+          .setName('아이템')
+          .setDescription('수리할 진화 아이템 이름입니다.')
+          .setRequired(true)
+          .setAutocomplete(true)
           .setMaxLength(80),
       ),
 
