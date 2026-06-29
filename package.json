@@ -1,0 +1,21 @@
+{
+  "name": "nocoin-discord-game-bot",
+  "version": "1.0.0",
+  "description": "Discord game bot with Nocoin betting, fishing, begging, and command sync.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "deploy": "node src/deploy-commands.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.26.4",
+    "dotenv": "^16.4.5"
+  },
+  "overrides": {
+    "undici": "^6.27.0"
+  }
+}

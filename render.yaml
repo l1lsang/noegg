@@ -1,0 +1,27 @@
+services:
+  - type: worker
+    name: nocoin-discord-bot
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
+      - key: BOT_OWNER_IDS
+        sync: false
+      - key: AUTO_SYNC_COMMANDS
+        value: "true"
+      - key: SYNC_SCOPE
+        value: guild
+      - key: DATA_FILE
+        value: /opt/render/project/src/data/db.json
+    disk:
+      name: nocoin-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
