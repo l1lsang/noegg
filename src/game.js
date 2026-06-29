@@ -93,6 +93,8 @@ const ITEM_GRADE_CONFIGS = {
   common: {
     key: 'common',
     label: '일반',
+    color: 0x95a5a6,
+    swatch: '⬜',
     baseCost: 8000,
     costGrowth: 0.22,
     statGain: 1,
@@ -101,6 +103,8 @@ const ITEM_GRADE_CONFIGS = {
   uncommon: {
     key: 'uncommon',
     label: '고급',
+    color: 0x2ecc71,
+    swatch: '🟩',
     baseCost: 15000,
     costGrowth: 0.28,
     statGain: 2,
@@ -109,6 +113,8 @@ const ITEM_GRADE_CONFIGS = {
   rare: {
     key: 'rare',
     label: '희귀',
+    color: 0x3498db,
+    swatch: '🟦',
     baseCost: 30000,
     costGrowth: 0.35,
     statGain: 3,
@@ -117,6 +123,8 @@ const ITEM_GRADE_CONFIGS = {
   epic: {
     key: 'epic',
     label: '영웅',
+    color: 0x9b59b6,
+    swatch: '🟪',
     baseCost: 60000,
     costGrowth: 0.45,
     statGain: 5,
@@ -125,6 +133,8 @@ const ITEM_GRADE_CONFIGS = {
   legendary: {
     key: 'legendary',
     label: '전설',
+    color: 0xf1c40f,
+    swatch: '🟨',
     baseCost: 120000,
     costGrowth: 0.58,
     statGain: 8,
@@ -133,6 +143,8 @@ const ITEM_GRADE_CONFIGS = {
   mythic: {
     key: 'mythic',
     label: '신화',
+    color: 0xe74c3c,
+    swatch: '🟥',
     baseCost: 250000,
     costGrowth: 0.75,
     statGain: 12,

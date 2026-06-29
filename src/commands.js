@@ -160,13 +160,19 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('아이템사용')
-      .setDescription('보관함 아이템 1개를 사용해서 유저를 강화합니다.')
+      .setDescription('보관함 아이템을 사용해서 유저를 강화합니다.')
       .addStringOption((option) =>
         option
           .setName('아이템')
           .setDescription('사용할 아이템 이름입니다. `/보관함`에서 확인할 수 있습니다.')
           .setRequired(true)
           .setMaxLength(80),
+      )
+      .addBooleanOption((option) =>
+        option
+          .setName('전부')
+          .setDescription('해당 아이템을 가진 만큼 전부 사용합니다.')
+          .setRequired(false),
       ),
 
     new SlashCommandBuilder()

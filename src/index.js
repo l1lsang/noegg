@@ -1,7 +1,9 @@
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
+const zlib = require('node:zlib');
 const {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   Client,
@@ -293,6 +295,20 @@ function createUiEmbed({ title, description, color = uiTheme.colors.primary } = 
   return embed;
 }
 
+function normalizeGradeConfig(grade) {
+  return getItemGradeConfig(typeof grade === 'string' ? grade : grade?.key);
+}
+
+function formatItemGradeLabel(grade) {
+  const config = normalizeGradeConfig(grade);
+  return `${config.swatch || '⬜'} [${config.label}]`;
+}
+
+function getItemGradeColor(grade, fallback = uiTheme.colors.inventory) {
+  const config = normalizeGradeConfig(grade);
+  return config.color || fallback;
+}
+
 function formatStatLine(power) {
   return `공격 ${power.attack} / 방어 ${power.defense} / 행운 ${power.luck}`;
 }
@@ -375,6 +391,226 @@ function formatPolymarketChartField(charts) {
   return lines.length > 0
     ? lines.join('\n')
     : '가격 히스토리를 표시할 수 없습니다.';
+}
+
+const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const pngCrcTable = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  return value >>> 0;
+});
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc = pngCrcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createPngChunk(type, data = Buffer.alloc(0)) {
+  const typeBuffer = Buffer.from(type);
+  const lengthBuffer = Buffer.alloc(4);
+  const crcBuffer = Buffer.alloc(4);
+  lengthBuffer.writeUInt32BE(data.length, 0);
+  crcBuffer.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])), 0);
+  return Buffer.concat([lengthBuffer, typeBuffer, data, crcBuffer]);
+}
+
+function getRgbParts(color) {
+  return [
+    (color >> 16) & 0xff,
+    (color >> 8) & 0xff,
+    color & 0xff,
+  ];
+}
+
+function createPixelBuffer(width, height, backgroundColor) {
+  const pixels = Buffer.alloc(width * height * 4);
+  const [red, green, blue] = getRgbParts(backgroundColor);
+
+  for (let index = 0; index < pixels.length; index += 4) {
+    pixels[index] = red;
+    pixels[index + 1] = green;
+    pixels[index + 2] = blue;
+    pixels[index + 3] = 255;
+  }
+
+  return pixels;
+}
+
+function drawPixel(pixels, width, height, x, y, color) {
+  const safeX = Math.round(x);
+  const safeY = Math.round(y);
+  if (safeX < 0 || safeX >= width || safeY < 0 || safeY >= height) {
+    return;
+  }
+
+  const index = (safeY * width + safeX) * 4;
+  const [red, green, blue] = getRgbParts(color);
+  pixels[index] = red;
+  pixels[index + 1] = green;
+  pixels[index + 2] = blue;
+  pixels[index + 3] = 255;
+}
+
+function drawFilledRect(pixels, width, height, x, y, rectWidth, rectHeight, color) {
+  const left = Math.max(0, Math.floor(x));
+  const top = Math.max(0, Math.floor(y));
+  const right = Math.min(width, Math.ceil(x + rectWidth));
+  const bottom = Math.min(height, Math.ceil(y + rectHeight));
+
+  for (let drawY = top; drawY < bottom; drawY += 1) {
+    for (let drawX = left; drawX < right; drawX += 1) {
+      drawPixel(pixels, width, height, drawX, drawY, color);
+    }
+  }
+}
+
+function drawLine(pixels, width, height, startX, startY, endX, endY, color, thickness = 1) {
+  const dx = Math.abs(Math.round(endX) - Math.round(startX));
+  const dy = Math.abs(Math.round(endY) - Math.round(startY));
+  const steps = Math.max(dx, dy, 1);
+  const radius = Math.max(0, Math.floor(thickness / 2));
+
+  for (let step = 0; step <= steps; step += 1) {
+    const ratio = step / steps;
+    const x = startX + (endX - startX) * ratio;
+    const y = startY + (endY - startY) * ratio;
+
+    for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
+      for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
+        if ((offsetX * offsetX) + (offsetY * offsetY) <= radius * radius + 1) {
+          drawPixel(pixels, width, height, x + offsetX, y + offsetY, color);
+        }
+      }
+    }
+  }
+}
+
+function drawCircle(pixels, width, height, centerX, centerY, radius, color) {
+  for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
+    for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
+      if ((offsetX * offsetX) + (offsetY * offsetY) <= radius * radius) {
+        drawPixel(pixels, width, height, centerX + offsetX, centerY + offsetY, color);
+      }
+    }
+  }
+}
+
+function encodePng(width, height, pixels) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+
+  const stride = width * 4;
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y += 1) {
+    const rowStart = y * (stride + 1);
+    raw[rowStart] = 0;
+    pixels.copy(raw, rowStart + 1, y * stride, (y + 1) * stride);
+  }
+
+  return Buffer.concat([
+    pngSignature,
+    createPngChunk('IHDR', ihdr),
+    createPngChunk('IDAT', zlib.deflateSync(raw)),
+    createPngChunk('IEND'),
+  ]);
+}
+
+function clampChartPrice(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function createPolymarketChartFile(market, charts = []) {
+  const drawableCharts = (charts || [])
+    .filter((chart) => chart.ok && chart.points?.some((point) => Number.isFinite(point.price)))
+    .map((chart) => ({
+      outcome: chart.outcome,
+      points: sampleValues(
+        chart.points
+          .map((point) => Number(point.price))
+          .filter((price) => Number.isFinite(price))
+          .map(clampChartPrice),
+        96,
+      ),
+    }))
+    .filter((chart) => chart.points.length > 0);
+
+  if (drawableCharts.length === 0) {
+    return null;
+  }
+
+  const width = 900;
+  const height = 420;
+  const margin = { left: 56, right: 32, top: 40, bottom: 44 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const pixels = createPixelBuffer(width, height, 0xf8fafc);
+  const palette = [0x27ae60, 0xe74c3c, 0x3498db, 0x9b59b6];
+
+  drawFilledRect(pixels, width, height, margin.left, margin.top, plotWidth, plotHeight, 0xffffff);
+
+  for (let index = 0; index <= 4; index += 1) {
+    const y = margin.top + (plotHeight / 4) * index;
+    drawLine(pixels, width, height, margin.left, y, margin.left + plotWidth, y, 0xdbe3ea, index === 2 ? 2 : 1);
+  }
+
+  for (let index = 0; index <= 6; index += 1) {
+    const x = margin.left + (plotWidth / 6) * index;
+    drawLine(pixels, width, height, x, margin.top, x, margin.top + plotHeight, 0xedf2f7, 1);
+  }
+
+  drawLine(pixels, width, height, margin.left, margin.top, margin.left, margin.top + plotHeight, 0x94a3b8, 2);
+  drawLine(pixels, width, height, margin.left, margin.top + plotHeight, margin.left + plotWidth, margin.top + plotHeight, 0x94a3b8, 2);
+
+  drawableCharts.slice(0, 4).forEach((chart, chartIndex) => {
+    const color = palette[chartIndex % palette.length];
+    const points = chart.points.map((price, pointIndex) => {
+      const x = chart.points.length === 1
+        ? margin.left
+        : margin.left + (plotWidth * pointIndex) / (chart.points.length - 1);
+      const y = margin.top + plotHeight * (1 - price);
+      return { x, y };
+    });
+
+    drawFilledRect(pixels, width, height, margin.left + chartIndex * 48, 20, 32, 10, color);
+
+    for (let pointIndex = 1; pointIndex < points.length; pointIndex += 1) {
+      drawLine(
+        pixels,
+        width,
+        height,
+        points[pointIndex - 1].x,
+        points[pointIndex - 1].y,
+        points[pointIndex].x,
+        points[pointIndex].y,
+        color,
+        4,
+      );
+    }
+
+    drawCircle(pixels, width, height, points[0].x, points[0].y, 5, color);
+    drawCircle(pixels, width, height, points[points.length - 1].x, points[points.length - 1].y, 6, color);
+  });
+
+  const fileSlug = String(market.id || market.conditionId || 'chart')
+    .replace(/[^a-z0-9_-]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'chart';
+  const fileName = `polymarket-${fileSlug}.png`;
+  return {
+    fileName,
+    attachment: new AttachmentBuilder(encodePng(width, height, pixels), { name: fileName }),
+  };
 }
 
 function getUnixTimestamp(value) {
@@ -583,7 +819,7 @@ function formatEvolutionSummary(user, maxItems = 4) {
       const enhanceText = evolution.enhanceLevel > 0 ? ` +${evolution.enhanceLevel}` : '';
       const nextCost = getItemEnhancementCost(evolution.grade.key, evolution.enhanceLevel);
       const nextChance = getItemEnhancementChance(evolution.grade.key, evolution.enhanceLevel);
-      return `[${evolution.grade.label}] ${evolution.name} Lv.${evolution.level}${enhanceText} (${evolution.itemName}) · 내구도 ${evolution.durability}/${evolution.maxDurability} · 다음 ${formatCoins(nextCost)} / ${formatChance(nextChance)}`;
+      return `${formatItemGradeLabel(evolution.grade)} ${evolution.name} Lv.${evolution.level}${enhanceText} (${evolution.itemName}) · 내구도 ${evolution.durability}/${evolution.maxDurability} · 다음 ${formatCoins(nextCost)} / ${formatChance(nextChance)}`;
     })
     .join('\n');
 }
@@ -719,7 +955,7 @@ function getSessionEvolutionSummary(style, maxItems = 2) {
     .slice(0, maxItems)
     .map((evolution) => {
       const enhanceText = evolution.enhanceLevel > 0 ? ` +${evolution.enhanceLevel}` : '';
-      return `[${evolution.grade.label}] ${evolution.name} Lv.${evolution.level}${enhanceText} 내구도 ${evolution.durability}/${evolution.maxDurability}`;
+      return `${formatItemGradeLabel(evolution.grade)} ${evolution.name} Lv.${evolution.level}${enhanceText} 내구도 ${evolution.durability}/${evolution.maxDurability}`;
     })
     .join(', ');
 }
@@ -815,7 +1051,7 @@ function resolveBattleAction(session, actorId, action) {
 
   const shieldText = shieldUsed > 0 ? ` 방어막이 ${shieldUsed} 피해를 흡수했습니다.` : '';
   return [
-    `${getBattleDisplayName(actorId, records)} [${evolution.grade?.label || '일반'} ${evolution.name} Lv.${evolutionLevel}]`,
+    `${getBattleDisplayName(actorId, records)} ${formatItemGradeLabel(evolution.grade)} ${evolution.name} Lv.${evolutionLevel}`,
     `${actionConfig.label}: ${actionConfig.name}`,
     actionConfig.motion,
     `<@${defenderId}>에게 ${damage} 피해.${shieldText}`,
@@ -1034,12 +1270,13 @@ function getItemPowerGain(item) {
   };
 }
 
-function applyItemEvolution(user, item, evolution) {
+function applyItemEvolution(user, item, evolution, uses = 1) {
+  const useCount = Math.max(1, Math.floor(uses));
   user.evolutions ||= {};
   const current = user.evolutions[item.key] && typeof user.evolutions[item.key] === 'object'
     ? user.evolutions[item.key]
     : {};
-  const level = Math.max(0, Math.floor(current.level || 0)) + 1;
+  const level = Math.max(0, Math.floor(current.level || 0)) + useCount;
   const enhanceLevel = Number.isFinite(current.enhanceLevel) ? Math.max(0, Math.floor(current.enhanceLevel)) : 0;
   const grade = getItemGradeConfig(evolution.grade);
   const maxDurability = Number.isFinite(current.maxDurability)
@@ -1057,7 +1294,7 @@ function applyItemEvolution(user, item, evolution) {
     enhanceAttempts: Math.max(0, Math.floor(current.enhanceAttempts || 0)),
     enhanceSuccesses: Math.max(0, Math.floor(current.enhanceSuccesses || 0)),
     enhancePowerBonus: current.enhancePowerBonus || { attack: 0, defense: 0, luck: 0 },
-    used: Math.max(0, Math.floor(current.used || 0)) + 1,
+    used: Math.max(0, Math.floor(current.used || 0)) + useCount,
     attack: evolution.attack,
     ultimate: evolution.ultimate,
     lastUsedAt: new Date().toISOString(),
@@ -1136,7 +1373,7 @@ function createInventoryEmbed(target, user) {
     ? items.slice(0, 12).map((item, index) => {
       const grade = getItemGradeConfig(getItemEvolution(item.name).grade);
       const valueText = item.bestValue > 0 ? `최고 ${formatCoins(item.bestValue)}` : '가치 미기록';
-      return `${index + 1}. [${grade.label}] ${item.name} x${item.count} · ${valueText}`;
+      return `${index + 1}. ${formatItemGradeLabel(grade)} ${item.name} x${item.count} · ${valueText}`;
     }).join('\n')
     : '아직 보관함이 비어 있습니다. `/낚시`로 첫 아이템을 잡아보세요.';
 
@@ -1199,7 +1436,7 @@ function createStatusEmbed(target, user) {
       const nextChance = getItemEnhancementChance(evolution.grade.key, evolution.enhanceLevel);
       const usable = evolution.durability > 0 ? '사용 가능' : '파손';
       return [
-        `${index + 1}. [${evolution.grade.label}] ${evolution.itemName} ${enhanceText} (${usable})`,
+        `${index + 1}. ${formatItemGradeLabel(evolution.grade)} ${evolution.itemName} ${enhanceText} (${usable})`,
         `${formatDurabilityLine(evolution.durability, evolution.maxDurability)} · 다음 강화 ${formatChance(nextChance)} / ${formatCoins(nextCost)}`,
       ].join('\n');
     }).join('\n\n')
@@ -1234,24 +1471,26 @@ function createStatusEmbed(target, user) {
     );
 }
 
-function createItemUseEmbed(user, item, gain, power, remaining, evolutionRecord) {
+function createItemUseEmbed(user, item, gain, power, remaining, evolutionRecord, usedCount = 1) {
   const grade = getItemGradeConfig(evolutionRecord.grade);
   const enhanceLevel = Number.isFinite(evolutionRecord.enhanceLevel)
     ? Math.max(0, Math.floor(evolutionRecord.enhanceLevel))
     : 0;
   const nextCost = getItemEnhancementCost(grade.key, enhanceLevel);
   const nextChance = getItemEnhancementChance(grade.key, enhanceLevel);
+  const usedLabel = usedCount > 1 ? `${usedCount}개를 전부 사용해` : '1개를 사용해';
 
   return createUiEmbed({
-    color: uiTheme.colors.success,
+    color: getItemGradeColor(grade, uiTheme.colors.success),
     title: '아이템 진화 성공',
-    description: `${user}님이 **[${grade.label}] ${item.name}**을 사용해 **${evolutionRecord.name} Lv.${evolutionRecord.level}**로 진화했습니다.`,
+    description: `${user}님이 **${formatItemGradeLabel(grade)} ${item.name}** ${usedLabel} **${evolutionRecord.name} Lv.${evolutionRecord.level}**로 진화했습니다.`,
   })
     .addFields(
       { name: '능력치 증가', value: `공격 +${gain.attack} / 방어 +${gain.defense} / 행운 +${gain.luck}`, inline: false },
       { name: '현재 수치', value: formatStatLine(power), inline: false },
       { name: '전투 기술', value: `${gain.evolution.attack}\n궁극기: ${gain.evolution.ultimate}`, inline: false },
       { name: '다음 강화', value: `${formatCoins(nextCost)} / 성공률 ${formatChance(nextChance)}`, inline: true },
+      { name: '사용 개수', value: `${usedCount}개`, inline: true },
       { name: '남은 아이템', value: `${remaining}개`, inline: true },
     );
 }
@@ -1271,8 +1510,8 @@ function createItemEnhanceEmbed({
   gain,
   balance,
 }) {
-  const color = success ? uiTheme.colors.success : protectedByTicket ? uiTheme.colors.warning : uiTheme.colors.danger;
   const grade = evolution.grade || getItemGradeConfig(evolution.definition.grade);
+  const color = success ? getItemGradeColor(grade, uiTheme.colors.success) : protectedByTicket ? uiTheme.colors.warning : uiTheme.colors.danger;
   const currentLevel = destroyed ? 0 : nextLevel;
   const nextCost = destroyed ? null : getItemEnhancementCost(grade.key, currentLevel);
   const nextChance = destroyed ? null : getItemEnhancementChance(grade.key, currentLevel);
@@ -1284,7 +1523,7 @@ function createItemEnhanceEmbed({
   const embed = createUiEmbed({
     color,
     title: success ? '아이템 강화 성공' : protectedByTicket ? '강화 실패 - 방지권 발동' : '강화 실패 - 아이템 파괴',
-    description: `${user}님이 **[${grade.label}] ${evolution.itemName}** 강화에 도전했습니다.`,
+    description: `${user}님이 **${formatItemGradeLabel(grade)} ${evolution.itemName}** 강화에 도전했습니다.`,
   })
     .addFields(
       { name: '결과', value: resultText, inline: true },
@@ -1661,7 +1900,7 @@ function createBetEmbed(bet) {
   return embed;
 }
 
-function createPolymarketMarketEmbed(market, charts = []) {
+function createPolymarketMarketEmbed(market, charts = [], chartFileName = null) {
   const endDate = market.endDate ? getUnixTimestamp(market.endDate) : null;
   const outcomeLines = market.outcomes.map((outcome, index) => {
     const price = market.outcomePrices[index];
@@ -1669,7 +1908,7 @@ function createPolymarketMarketEmbed(market, charts = []) {
   });
   const status = market.closed ? '종료됨' : market.active ? '진행 중' : '비활성';
 
-  return createUiEmbed({
+  const embed = createUiEmbed({
     color: market.active ? uiTheme.colors.market : uiTheme.colors.muted,
     title: truncateText(market.question, 256),
     description: [
@@ -1705,6 +1944,26 @@ function createPolymarketMarketEmbed(market, charts = []) {
       },
     )
     .setFooter({ text: `${uiTheme.footer} · 노코인 모의 베팅용 정보` });
+
+  if (chartFileName) {
+    embed.setImage(`attachment://${chartFileName}`);
+  }
+
+  return embed;
+}
+
+function createPolymarketMarketView(market, charts = []) {
+  let chartFile = null;
+  try {
+    chartFile = createPolymarketChartFile(market, charts);
+  } catch (error) {
+    console.warn(`Failed to render Polymarket chart image: ${error.message}`);
+  }
+
+  return {
+    embed: createPolymarketMarketEmbed(market, charts, chartFile?.fileName),
+    files: chartFile ? [chartFile.attachment] : [],
+  };
 }
 
 function createPolymarketSearchEmbed(query, markets) {
@@ -1851,22 +2110,27 @@ function createAmountComponents(bet, optionIndex, balance) {
       .setDisabled(balance < amount),
   );
 
-  amountButtons.push(
+  const percentButtons = [
+    new ButtonBuilder()
+      .setCustomId(betCustomId('amount', bet.id, optionIndex, 'half'))
+      .setLabel('50%')
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(balance < 2),
     new ButtonBuilder()
       .setCustomId(betCustomId('amount', bet.id, optionIndex, 'all'))
-      .setLabel('올인')
+      .setLabel('100%')
       .setStyle(ButtonStyle.Success)
       .setDisabled(balance <= 0),
-  );
-
-  amountButtons.push(
     new ButtonBuilder()
       .setCustomId(betCustomId('custom', bet.id, optionIndex))
       .setLabel('직접 입력')
       .setStyle(ButtonStyle.Secondary),
-  );
+  ];
 
-  return [new ActionRowBuilder().addComponents(amountButtons)];
+  return [
+    new ActionRowBuilder().addComponents(amountButtons),
+    new ActionRowBuilder().addComponents(percentButtons),
+  ];
 }
 
 function createBetPickEmbed(bet, option, balance) {
@@ -2153,6 +2417,18 @@ function ensureBet(guild, betId) {
   return guild.bets[String(betId || '').trim().toUpperCase()];
 }
 
+function resolveBetAmount(amount, balance) {
+  if (amount === 'all') {
+    return balance;
+  }
+
+  if (amount === 'half') {
+    return Math.floor(balance * 0.5);
+  }
+
+  return Number.parseInt(amount, 10);
+}
+
 async function placeBet({ guildId, discordUser, betId, optionName, optionIndex, amount }) {
   return store.run((data) => {
     const guild = store.ensureGuild(data, guildId);
@@ -2176,7 +2452,7 @@ async function placeBet({ guildId, discordUser, betId, optionName, optionIndex, 
       };
     }
 
-    const wagerAmount = amount === 'all' ? user.balance : Number.parseInt(amount, 10);
+    const wagerAmount = resolveBetAmount(amount, user.balance);
     if (!Number.isInteger(wagerAmount) || wagerAmount < 1) {
       return { ok: false, reason: '베팅 금액은 1 이상이어야 합니다.' };
     }
@@ -2487,6 +2763,7 @@ async function handleUseItem(interaction) {
   }
 
   const itemName = interaction.options.getString('아이템', true).trim();
+  const useAll = interaction.options.getBoolean('전부') === true;
   const result = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
     const user = store.ensureUser(guild, interaction.user);
@@ -2506,30 +2783,52 @@ async function handleUseItem(interaction) {
       };
     }
 
-    const gain = getItemPowerGain(item);
+    const useCount = useAll ? item.count : 1;
+    const baseGain = getItemPowerGain(item);
+    const gain = {
+      ...baseGain,
+      attack: baseGain.attack * useCount,
+      defense: baseGain.defense * useCount,
+      luck: baseGain.luck * useCount,
+    };
     user.power.attack += gain.attack;
     user.power.defense += gain.defense;
     user.power.luck += gain.luck;
-    user.stats.itemsUsed += 1;
-    const evolutionRecord = applyItemEvolution(user, item, gain.evolution);
+    user.stats.itemsUsed += useCount;
+    const evolutionRecord = applyItemEvolution(user, item, gain.evolution, useCount);
 
     const current = user.inventory[item.key];
     if (current && typeof current === 'object') {
-      current.count = Math.max(0, Math.floor(current.count || 0) - 1);
+      current.count = Math.max(0, Math.floor(current.count || 0) - useCount);
       if (current.count <= 0) {
+        delete user.inventory[item.key];
+      }
+    } else if (Number.isFinite(current)) {
+      const remaining = Math.max(0, Math.floor(current) - useCount);
+      if (remaining > 0) {
+        user.inventory[item.key] = remaining;
+      } else {
         delete user.inventory[item.key];
       }
     } else {
       delete user.inventory[item.key];
     }
 
+    const remainingItem = user.inventory[item.key];
+    const remaining = remainingItem && typeof remainingItem === 'object'
+      ? Math.max(0, Math.floor(remainingItem.count || 0))
+      : Number.isFinite(remainingItem)
+        ? Math.max(0, Math.floor(remainingItem))
+        : 0;
+
     return {
       ok: true,
       item,
       gain,
       evolutionRecord,
+      usedCount: useCount,
       power: getUserPower(user),
-      remaining: user.inventory[item.key]?.count || 0,
+      remaining,
     };
   });
 
@@ -2550,6 +2849,7 @@ async function handleUseItem(interaction) {
         result.power,
         result.remaining,
         result.evolutionRecord,
+        result.usedCount,
       ),
     ],
   });
@@ -3064,11 +3364,14 @@ async function handleBetInfo(interaction) {
   }
 
   const embeds = [createBetEmbed(bet)];
+  const files = [];
   if (bet.source?.type === 'polymarket' && bet.source.marketId) {
     try {
       const market = await fetchPolymarketMarket(bet.source.marketId);
       const charts = await fetchPolymarketPriceCharts(market);
-      embeds.push(createPolymarketMarketEmbed(market, charts));
+      const marketView = createPolymarketMarketView(market, charts);
+      embeds.push(marketView.embed);
+      files.push(...marketView.files);
     } catch (error) {
       embeds.push(
         createUiEmbed({
@@ -3082,6 +3385,7 @@ async function handleBetInfo(interaction) {
 
   await reply(interaction, {
     embeds,
+    files,
     components: createBetComponents(bet),
   });
 }
@@ -3229,7 +3533,7 @@ async function handleBetAmountButton(interaction, parsed) {
     discordUser: interaction.user,
     betId,
     optionIndex,
-    amount: rawAmount === 'all' ? 'all' : rawAmount,
+    amount: rawAmount,
   });
 
   if (!result.ok) {
@@ -3397,6 +3701,7 @@ async function handlePolymarketCreate(interaction) {
 
   const market = await fetchPolymarketMarket(marketId);
   const charts = await fetchPolymarketPriceCharts(market);
+  const marketView = createPolymarketMarketView(market, charts);
   const result = await createPolymarketBet({
     guildId: interaction.guildId,
     discordUser: interaction.user,
@@ -3414,7 +3719,8 @@ async function handlePolymarketCreate(interaction) {
     content: result.created
       ? `Polymarket 시장으로 노코인 베팅 ${result.bet.id}을 만들었습니다.`
       : `이미 열린 노코인 베팅 ${result.bet.id}이 있습니다.`,
-    embeds: [createBetEmbed(result.bet), createPolymarketMarketEmbed(market, charts)],
+    embeds: [createBetEmbed(result.bet), marketView.embed],
+    files: marketView.files,
     components: createBetComponents(result.bet),
   });
 }
@@ -3428,8 +3734,11 @@ async function handlePolymarketMarketSelect(interaction) {
   await interaction.deferUpdate();
   const market = await fetchPolymarketMarket(marketId);
   const charts = await fetchPolymarketPriceCharts(market);
+  const marketView = createPolymarketMarketView(market, charts);
   await interaction.editReply({
-    embeds: [createPolymarketMarketEmbed(market, charts)],
+    embeds: [marketView.embed],
+    files: marketView.files,
+    attachments: [],
     components: createPolymarketMarketComponents(market),
   });
   return true;
@@ -3444,6 +3753,7 @@ async function handlePolymarketCreateButton(interaction, parsed) {
   await interaction.deferReply();
   const market = await fetchPolymarketMarket(marketId);
   const charts = await fetchPolymarketPriceCharts(market);
+  const marketView = createPolymarketMarketView(market, charts);
   const result = await createPolymarketBet({
     guildId: interaction.guildId,
     discordUser: interaction.user,
@@ -3461,7 +3771,8 @@ async function handlePolymarketCreateButton(interaction, parsed) {
     content: result.created
       ? `Polymarket 시장으로 노코인 베팅 ${result.bet.id}을 만들었습니다.`
       : `이미 열린 노코인 베팅 ${result.bet.id}이 있습니다.`,
-    embeds: [createBetEmbed(result.bet), createPolymarketMarketEmbed(market, charts)],
+    embeds: [createBetEmbed(result.bet), marketView.embed],
+    files: marketView.files,
     components: createBetComponents(result.bet),
   });
   return true;
