@@ -37,6 +37,23 @@ npm.cmd start
 
 처음에는 `DISCORD_GUILD_ID`를 넣고 서버 명령어로 등록하는 것을 추천합니다. 서버 명령어는 보통 바로 반영되고, 전역 명령어는 반영까지 시간이 걸릴 수 있습니다.
 
+## Slash command 등록 문제
+
+명령어가 보이지 않으면 먼저 `.env` 파일이 실제로 있는지 확인하세요. `.env.example`은 예시라서 자동으로 읽히지 않습니다.
+
+필수 값:
+
+- `DISCORD_TOKEN`: 봇 토큰
+- `DISCORD_CLIENT_ID`: Discord Developer Portal의 Application ID
+- `DISCORD_GUILD_ID`: 명령어를 바로 반영할 서버 ID
+- `SYNC_SCOPE`: 빠른 테스트는 `guild`
+
+값을 넣은 뒤 아래 명령어로 등록합니다.
+
+```bash
+npm.cmd run deploy
+```
+
 ## Render 배포
 
 이 프로젝트는 `render.yaml`을 포함합니다. Render에서 저장소를 연결한 뒤 환경변수를 설정하세요.
