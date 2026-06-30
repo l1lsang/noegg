@@ -363,8 +363,8 @@ const ITEM_EVOLUTION_DEFINITIONS = [
     stance: '칼날 끝에서 선명한 피가 맺힌다',
     attack: '검술',
     motion: '짧은 보폭으로 파고들어 빛나는 칼날을 사선으로 긋습니다.',
-    ultimate: '마약 OD',
-    ultimateMotion: '비타500에 물뽕을 타서 먹인다',
+    ultimate: '비타커터VIP+쿼카섭1등멘헤라공신자해의여왕',
+    ultimateMotion: '멘헤라를 터뜨려서 상대에게 출혈을 일으킨다',
     statBias: { attack: 3, defense: 1, luck: 0 },
   },
   {

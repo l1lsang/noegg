@@ -61,12 +61,12 @@ const waterGunContestants = [
   {
     key: 'choya',
     label: '초야',
-    motion: '낮게 깔린 물줄기로 안정적인 직선을 만들었습니다.',
+    motion: '낮게 깔린 정액줄기로 안정적인 직선을 만들었습니다.',
   },
   {
     key: 'senyang',
     label: '세냥',
-    motion: '순간적으로 힘을 몰아넣어 물줄기를 길게 뽑았습니다.',
+    motion: '순간적으로 힘을 몰아넣어 정액을 길게 뽑았습니다.',
   },
   {
     key: 'namraeng',
