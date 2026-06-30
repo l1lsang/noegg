@@ -411,7 +411,7 @@ function getShopItems() {
   const protectionTicketGrade = getItemGradeConfig('legendary');
   const protectionTicket = {
     name: '강화 방지권',
-    aliases: ['방지권'],
+    aliases: ['방지권', '아이템 방지권'],
     type: 'protection_ticket',
     protectionTicket: true,
     grade: protectionTicketGrade,
@@ -433,6 +433,22 @@ function findShopItem(rawName) {
     || normalizeKey(item.evolution?.evolution) === wanted
     || (item.aliases || []).some((alias) => normalizeKey(alias) === wanted)
   );
+}
+
+function consumeProtectionTicket(user) {
+  const tickets = Number.isFinite(user.protectionTickets)
+    ? Math.max(0, Math.floor(user.protectionTickets))
+    : 0;
+
+  if (tickets <= 0) {
+    user.protectionTickets = 0;
+    return false;
+  }
+
+  user.protectionTickets = tickets - 1;
+  user.stats ||= {};
+  user.stats.protectionTicketsUsed = Math.max(0, Math.floor(user.stats.protectionTicketsUsed || 0)) + 1;
+  return true;
 }
 
 function getArmorProfile(gradeKey = 'common') {
@@ -3262,6 +3278,10 @@ function createInventoryEmbed(target, user) {
       return `${index + 1}. ${formatItemGradeLabel(grade)} ${item.name} x${item.count} · ${valueText} · 사용 ${formatChance(getItemUseChance(grade.key))}`;
     }).join('\n')
     : '아직 보관함이 비어 있습니다. `/낚시`로 첫 아이템을 잡아보세요.';
+  const protectionTickets = user.protectionTickets || 0;
+  const protectionText = protectionTickets > 0
+    ? `방지권: ${protectionTickets}장 · 아이템 사용 실패와 강화 파괴를 자동 보호`
+    : '방지권: 0장 · 아이템 사용 실패와 강화 파괴 보호 없음';
 
   const embed = createUiEmbed({
     color: uiTheme.colors.inventory,
@@ -3280,7 +3300,7 @@ function createInventoryEmbed(target, user) {
           bestWeapon
             ? `대표 무기: ${formatItemGradeLabel(bestWeapon.evolution.grade)} ${bestWeapon.evolution.itemName} · ${formatStatLine(bestWeapon.power)}`
             : '대표 무기: 전투 가능 무기 없음',
-          `방지권: ${user.protectionTickets || 0}장`,
+          protectionText,
           `아이템 사용: ${stats.itemsUsed || 0}회`,
           `상점 구매: ${stats.itemShopPurchases || 0}개 / 수리 ${stats.itemRepairCount || 0}회`,
         ].join('\n'),
@@ -3337,7 +3357,7 @@ function createItemRatesEmbed() {
       { name: '등급별 확률', value: gradeLines || '확률 정보가 없습니다.', inline: false },
       { name: '아이템 사용 성공률', value: useLines || '확률 정보가 없습니다.', inline: false },
       { name: '방어구 뽑기 확률', value: armorLines, inline: false },
-      { name: '특수 획득', value: `강화 방지권 ${formatChance(protectionChance)}`, inline: true },
+      { name: '특수 획득', value: `강화 방지권 ${formatChance(protectionChance)} · 아이템 사용 실패/강화 파괴 보호`, inline: true },
       { name: '실패', value: `빈손 ${formatChance(failureChance)}`, inline: true },
     );
 }
@@ -3365,7 +3385,7 @@ function createShopEmbed(user) {
     description: [
       `보유 잔액: ${formatCoins(user.balance || 0)}`,
       `상점 가격 배율: ${multiplierLines}`,
-      '강화 방지권은 구매 즉시 방지권 보유량에 추가됩니다.',
+      '강화 방지권은 구매 즉시 보유량에 추가되고, 아이템 사용 실패와 강화 파괴를 자동으로 막습니다.',
     ].join('\n'),
   });
 
@@ -3528,6 +3548,13 @@ function createItemUseEmbed({
   const grade = getItemGradeConfig(evolutionRecord?.grade || evolution.grade);
   const success = successCount > 0 && evolutionRecord;
   const usedLabel = usedCount > 1 ? `${usedCount}개를 사용해` : '1개를 사용해';
+  const consumedFailureCount = Math.max(0, failedCount - protectedCount);
+  const resultText = protectedCount > 0
+    ? `성공 ${successCount}개 / 실패 ${failedCount}개 (방지 ${protectedCount}개)`
+    : `성공 ${successCount}개 / 실패 ${failedCount}개`;
+  const protectionResultText = consumedFailureCount > 0
+    ? `실패 ${protectedCount}개는 방지권 1장씩 사용해 소모를 막았고, 방지권이 부족한 실패 ${consumedFailureCount}개는 소모됐습니다. 남은 방지권 ${protectionTickets}장`
+    : `실패 ${protectedCount}개는 방지권 1장씩 사용해 소모를 막았습니다. 남은 방지권 ${protectionTickets}장`;
   const embed = createUiEmbed({
     color: success ? getItemGradeColor(grade, uiTheme.colors.success) : uiTheme.colors.danger,
     title: success ? '아이템 진화 성공' : '아이템 사용 실패',
@@ -3535,7 +3562,7 @@ function createItemUseEmbed({
       ? `${user}님이 **${formatItemGradeLabel(grade)} ${item.name}** ${usedLabel} **${evolutionRecord.name} Lv.${evolutionRecord.level}**로 진화했습니다.`
       : `${user}님이 **${formatItemGradeLabel(grade)} ${item.name}** ${usedLabel}했지만 진화에 실패했습니다.`,
   }).addFields(
-    { name: '사용 결과', value: `성공 ${successCount}개 / 실패 ${failedCount}개`, inline: true },
+    { name: '사용 결과', value: resultText, inline: true },
     { name: '사용 확률', value: formatChance(useChance), inline: true },
     { name: '남은 아이템', value: `${remaining}개`, inline: true },
   );
@@ -3543,7 +3570,7 @@ function createItemUseEmbed({
   if (protectedCount > 0) {
     embed.addFields({
       name: '방지권 발동',
-      value: `실패 ${protectedCount}개는 방지권으로 소모를 막았습니다. 남은 방지권 ${protectionTickets}장`,
+      value: protectionResultText,
       inline: false,
     });
   }
@@ -3552,7 +3579,9 @@ function createItemUseEmbed({
     embed.addFields({
       name: '처리',
       value: protectedCount > 0
-        ? '방지권이 막은 아이템은 보관함에 남고, 진화 레벨은 오르지 않았습니다.'
+        ? consumedFailureCount > 0
+          ? '방지권이 막은 아이템은 보관함에 남고, 방지권이 부족한 실패분은 소모됐습니다.'
+          : '방지권이 막은 아이템은 보관함에 남고, 진화 레벨은 오르지 않았습니다.'
         : '사용한 아이템은 소모됐고 진화 레벨은 오르지 않았습니다.',
       inline: false,
     });
@@ -3855,7 +3884,7 @@ function createFishingEmbed(stage, payload = {}) {
       );
     } else if (payload.reward.protectionTicket) {
       embed.addFields(
-        { name: '특수 획득', value: '강화 실패 시 자동으로 아이템 파괴를 막는 방지권을 얻었습니다.', inline: false },
+        { name: '특수 획득', value: '아이템 사용 실패와 강화 파괴를 자동으로 막는 방지권을 얻었습니다.', inline: false },
         { name: '보유 방지권', value: `${payload.protectionTickets || 0}장`, inline: true },
         { name: '현재 잔액', value: formatCoins(payload.balance), inline: true },
       );
@@ -5857,20 +5886,22 @@ async function handleUseItem(interaction) {
     let successCount = 0;
     let failedCount = 0;
     let protectedCount = 0;
+    let consumedFailureCount = 0;
 
     for (let index = 0; index < useCount; index += 1) {
       if (rollItemUse(grade.key).success) {
         successCount += 1;
-      } else if (user.protectionTickets > 0) {
-        user.protectionTickets -= 1;
-        user.stats.protectionTicketsUsed += 1;
-        protectedCount += 1;
       } else {
         failedCount += 1;
+        if (consumeProtectionTicket(user)) {
+          protectedCount += 1;
+        } else {
+          consumedFailureCount += 1;
+        }
       }
     }
 
-    const consumedCount = successCount + failedCount;
+    const consumedCount = successCount + consumedFailureCount;
     const gain = {
       ...baseGain,
       attack: baseGain.attack * successCount,
@@ -6152,9 +6183,7 @@ async function handleItemEnhanceUiInteraction(interaction) {
       user.stats.itemEnhanceFailures = (user.stats.itemEnhanceFailures || 0) + 1;
 
       if (rolled.destroyed) {
-        if (user.protectionTickets > 0) {
-          user.protectionTickets -= 1;
-          user.stats.protectionTicketsUsed += 1;
+        if (consumeProtectionTicket(user)) {
           protectedByTicket = true;
           current.enhanceLevel = previousLevel;
           current.lastProtectedAt = new Date().toISOString();
