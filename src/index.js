@@ -357,11 +357,22 @@ function getShopItemPrice(item) {
 }
 
 function getShopItems() {
+  const protectionTicketGrade = getItemGradeConfig('legendary');
+  const protectionTicket = {
+    name: '강화 방지권',
+    aliases: ['방지권'],
+    type: 'protection_ticket',
+    protectionTicket: true,
+    grade: protectionTicketGrade,
+    price: protectionTicketGrade.baseCost * 2,
+  };
+
   return listFishingItems(economyMultiplier)
     .map((item) => ({
       ...item,
       price: getShopItemPrice(item),
-    }));
+    }))
+    .concat(protectionTicket);
 }
 
 function findShopItem(rawName) {
@@ -369,6 +380,7 @@ function findShopItem(rawName) {
   return getShopItems().find((item) =>
     normalizeKey(item.name) === wanted
     || normalizeKey(item.evolution?.evolution) === wanted
+    || (item.aliases || []).some((alias) => normalizeKey(alias) === wanted)
   );
 }
 
@@ -1914,6 +1926,7 @@ function createShopEmbed(user) {
     description: [
       `보유 잔액: ${formatCoins(user.balance || 0)}`,
       '상점 아이템은 낚시 평균 가치보다 비싸게 판매됩니다.',
+      '강화 방지권은 구매 즉시 방지권 보유량에 추가됩니다.',
     ].join('\n'),
   });
 
@@ -1928,8 +1941,8 @@ function createShopEmbed(user) {
   return embed;
 }
 
-function createItemPurchaseEmbed({ user, item, quantity, totalCost, balance, inventoryItem }) {
-  return createUiEmbed({
+function createItemPurchaseEmbed({ user, item, quantity, totalCost, balance, inventoryItem, protectionTickets }) {
+  const embed = createUiEmbed({
     color: getItemGradeColor(item.grade, uiTheme.colors.economy),
     title: '아이템 구매 완료',
     description: `${user}님이 **${formatItemGradeLabel(item.grade)} ${item.name}** ${quantity}개를 구매했습니다.`,
@@ -1937,8 +1950,15 @@ function createItemPurchaseEmbed({ user, item, quantity, totalCost, balance, inv
     .addFields(
       { name: '결제 금액', value: formatCoins(totalCost), inline: true },
       { name: '남은 잔액', value: formatCoins(balance), inline: true },
-      { name: '보관 수량', value: `${inventoryItem?.count || quantity}개`, inline: true },
     );
+
+  if (item.protectionTicket) {
+    embed.addFields({ name: '보유 방지권', value: `${protectionTickets || quantity}장`, inline: true });
+  } else {
+    embed.addFields({ name: '보관 수량', value: `${inventoryItem?.count || quantity}개`, inline: true });
+  }
+
+  return embed;
 }
 
 function createItemRepairEmbed({ user, evolution, cost, balance, previousDurability, nextDurability }) {
@@ -3701,13 +3721,17 @@ async function handleBuyItem(interaction) {
     user.stats.itemShopSpent += totalCost;
 
     let inventoryItem = null;
-    for (let index = 0; index < quantity; index += 1) {
-      inventoryItem = addInventoryItem(user, {
-        label: shopItem.name,
-        amount: shopItem.averageAmount,
-        baseAmount: shopItem.averageBaseAmount,
-        weight: shopItem.weight,
-      });
+    if (shopItem.protectionTicket) {
+      user.protectionTickets += quantity;
+    } else {
+      for (let index = 0; index < quantity; index += 1) {
+        inventoryItem = addInventoryItem(user, {
+          label: shopItem.name,
+          amount: shopItem.averageAmount,
+          baseAmount: shopItem.averageBaseAmount,
+          weight: shopItem.weight,
+        });
+      }
     }
 
     return {
@@ -3717,6 +3741,7 @@ async function handleBuyItem(interaction) {
       totalCost,
       balance: user.balance,
       inventoryItem,
+      protectionTickets: user.protectionTickets,
     };
   });
 
@@ -3737,6 +3762,7 @@ async function handleBuyItem(interaction) {
         totalCost: result.totalCost,
         balance: result.balance,
         inventoryItem: result.inventoryItem,
+        protectionTickets: result.protectionTickets,
       }),
     ],
   });
