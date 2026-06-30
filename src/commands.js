@@ -353,6 +353,10 @@ function buildCommandData() {
       ),
 
     new SlashCommandBuilder()
+      .setName('배치확률')
+      .setDescription('롤 배치고사 전체 확률표를 PNG 이미지로 확인합니다.'),
+
+    new SlashCommandBuilder()
       .setName('사정')
       .setDescription('초야, 세냥, 남랭 중 누가 가장 멀리 쌀지 베팅합니다.')
       .addStringOption((option) =>

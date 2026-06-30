@@ -1,6 +1,9 @@
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 const zlib = require('node:zlib');
+const { Resvg } = require('@resvg/resvg-js');
 const {
   ActionRowBuilder,
   AttachmentBuilder,
@@ -57,6 +60,12 @@ const ownerIds = new Set(config.ownerIds);
 const economyMultiplier = Math.max(1, Math.floor(config.economyMultiplier || 1));
 const quickBetAmounts = [100, 500, 1000].map((amount) => amount * economyMultiplier);
 const koreaTimeZone = 'Asia/Seoul';
+const assetRoot = path.join(__dirname, '..', 'assets');
+const fontRoot = path.join(assetRoot, 'fonts');
+const dashboardFontFiles = [
+  path.join(fontRoot, 'NotoSansCJKkr-Regular.otf'),
+  path.join(fontRoot, 'NotoSansCJKkr-Bold.otf'),
+].filter((fontPath) => fs.existsSync(fontPath));
 const casinoWinChances = {
   coinFlip: 0.48,
   dice: 0.15,
@@ -516,10 +525,137 @@ function formatPlacementExamProfit(profit) {
   return formatCoins(0);
 }
 
-function formatPlacementExamOdds() {
-  return placementExamTiers
-    .map((tier) => `${tier.name} ${formatPlacementExamMultiplier(tier)} · ${formatPlacementExamChance(tier)}`)
-    .join('\n');
+function escapeSvgText(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function colorToHex(color) {
+  return `#${Math.max(0, Math.min(0xffffff, color)).toString(16).padStart(6, '0')}`;
+}
+
+function createPlacementTierBadgeSvg(tier, x, y, size = 54) {
+  const centerX = x + size / 2;
+  const centerY = y + size / 2;
+  const primary = colorToHex(tier.color);
+  const accent = colorToHex(tier.accent);
+  const dark = '#111827';
+
+  return [
+    `<circle cx="${centerX}" cy="${centerY}" r="${size * 0.47}" fill="${dark}" stroke="${primary}" stroke-width="3"/>`,
+    `<path d="M ${centerX} ${y + 4} L ${x + size - 9} ${centerY} L ${centerX} ${y + size - 4} L ${x + 9} ${centerY} Z" fill="${primary}" opacity="0.95"/>`,
+    `<path d="M ${centerX} ${y + 14} L ${x + size - 22} ${centerY} L ${centerX} ${y + size - 15} L ${x + 22} ${centerY} Z" fill="${dark}"/>`,
+    `<path d="M ${centerX} ${y + 21} L ${x + size - 30} ${centerY} L ${centerX} ${y + size - 23} L ${x + 30} ${centerY} Z" fill="${accent}"/>`,
+    `<circle cx="${centerX}" cy="${centerY}" r="${tier.multiplier < 0 ? 4 : 6}" fill="#f8fafc"/>`,
+  ].join('');
+}
+
+function createPlacementExamOddsSvg() {
+  const width = 1180;
+  const headerHeight = 168;
+  const warningHeight = 92;
+  const rowHeight = 88;
+  const tableTop = headerHeight + 34;
+  const tableLeft = 54;
+  const tableWidth = width - tableLeft * 2;
+  const height = tableTop + 66 + placementExamTiers.length * rowHeight + warningHeight;
+  const columns = {
+    tier: tableLeft,
+    name: tableLeft + 156,
+    reward: tableLeft + 446,
+    chance: tableLeft + 800,
+  };
+  const totalExpectedValue = placementExamTiers.reduce(
+    (sum, tier) => sum + (tier.multiplier * tier.chancePercent) / 100,
+    0,
+  );
+
+  const rows = placementExamTiers.map((tier, index) => {
+    const y = tableTop + 66 + index * rowHeight;
+    const rowFill = index % 2 === 0 ? '#101827' : '#172033';
+    const rewardTone = tier.multiplier > 0 ? '#8ef7b6' : '#ff9d8b';
+    const riskText = tier.multiplier > 0 ? '획득' : '손실';
+
+    return `
+      <rect x="${tableLeft}" y="${y}" width="${tableWidth}" height="${rowHeight}" fill="${rowFill}" stroke="#2b3547"/>
+      ${createPlacementTierBadgeSvg(tier, columns.tier + 48, y + 17, 54)}
+      <text x="${columns.name}" y="${y + 54}" class="tier-name">${escapeSvgText(tier.name)}</text>
+      <text x="${columns.reward}" y="${y + 54}" class="reward" fill="${rewardTone}">${escapeSvgText(formatPlacementExamMultiplier(tier))}</text>
+      <text x="${columns.chance}" y="${y + 54}" class="chance">${escapeSvgText(formatPlacementExamChance(tier))}</text>
+      <text x="${tableLeft + tableWidth - 64}" y="${y + 54}" class="risk" fill="${rewardTone}" text-anchor="end">${riskText}</text>
+    `;
+  }).join('');
+
+  return `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+      <defs>
+        <linearGradient id="page" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#08111f"/>
+          <stop offset="55%" stop-color="#101827"/>
+          <stop offset="100%" stop-color="#1d2335"/>
+        </linearGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000000" flood-opacity="0.36"/>
+        </filter>
+      </defs>
+      <style>
+        text { font-family: "Noto Sans CJK KR", "Noto Sans KR", sans-serif; }
+        .eyebrow { font-size: 26px; fill: #7dd3fc; font-weight: 700; letter-spacing: 2px; }
+        .title { font-size: 56px; fill: #f8fafc; font-weight: 900; }
+        .subtitle { font-size: 24px; fill: #cbd5e1; font-weight: 500; }
+        .header { font-size: 26px; fill: #93a4bd; font-weight: 800; }
+        .tier-name { font-size: 34px; fill: #f8fafc; font-weight: 800; }
+        .reward { font-size: 31px; font-weight: 800; }
+        .chance { font-size: 34px; fill: #e5e7eb; font-weight: 900; }
+        .risk { font-size: 24px; font-weight: 800; }
+        .warning { font-size: 28px; fill: #fff7ed; font-weight: 900; }
+        .small { font-size: 20px; fill: #94a3b8; font-weight: 500; }
+      </style>
+      <rect width="${width}" height="${height}" fill="url(#page)"/>
+      <circle cx="1000" cy="120" r="220" fill="#2563eb" opacity="0.12"/>
+      <circle cx="120" cy="760" r="260" fill="#f59e0b" opacity="0.08"/>
+
+      <text x="54" y="64" class="eyebrow">NOCOIN PLACEMENT</text>
+      <text x="54" y="126" class="title">롤 배치고사 확률표</text>
+      <text x="54" y="162" class="subtitle">보상은 순손익 기준입니다. 손실 티어는 잔액이 마이너스가 될 수 있습니다.</text>
+
+      <rect x="${tableLeft}" y="${tableTop}" width="${tableWidth}" height="${66 + placementExamTiers.length * rowHeight}" rx="22" fill="#0f172a" filter="url(#shadow)" stroke="#2b3547"/>
+      <rect x="${tableLeft}" y="${tableTop}" width="${tableWidth}" height="66" rx="22" fill="#172033"/>
+      <rect x="${tableLeft}" y="${tableTop + 38}" width="${tableWidth}" height="28" fill="#172033"/>
+      <text x="${columns.tier + 42}" y="${tableTop + 43}" class="header">종류</text>
+      <text x="${columns.name}" y="${tableTop + 43}" class="header">이름</text>
+      <text x="${columns.reward}" y="${tableTop + 43}" class="header">보상</text>
+      <text x="${columns.chance}" y="${tableTop + 43}" class="header">확률</text>
+      ${rows}
+
+      <rect x="54" y="${height - warningHeight - 34}" width="${tableWidth}" height="${warningHeight}" rx="22" fill="#7f1d1d" opacity="0.96" stroke="#fb923c"/>
+      <text x="88" y="${height - warningHeight + 22}" class="warning">${escapeSvgText(placementExamWarning)}</text>
+      <text x="88" y="${height - warningHeight + 56}" class="small">최대 손실: 베팅액 x ${placementExamMaxLossMultiplier}배 · 기대값: ${(totalExpectedValue * 100).toFixed(1)}%</text>
+    </svg>
+  `;
+}
+
+function createPlacementExamOddsPngFile() {
+  const svg = createPlacementExamOddsSvg();
+  const resvg = new Resvg(svg, {
+    fitTo: { mode: 'original' },
+    font: {
+      fontFiles: dashboardFontFiles,
+      loadSystemFonts: dashboardFontFiles.length === 0,
+      defaultFontFamily: 'Noto Sans CJK KR',
+    },
+  });
+  const png = resvg.render().asPng();
+  const fileName = 'placement-odds.png';
+
+  return {
+    fileName,
+    attachment: new AttachmentBuilder(png, { name: fileName }),
+  };
 }
 
 function drawLottery(wager) {
@@ -1154,10 +1290,9 @@ function createPlacementExamTierIconFile(tier) {
 }
 
 function createStatusCardFile(target, user) {
-  const width = 960;
-  const height = 560;
-  const pixels = createPixelBuffer(width, height, 0x080f1f);
-  const displayName = toAsciiText(getDisplayName(target, user), 'USER');
+  const width = 1280;
+  const height = 1580;
+  const displayName = getDisplayName(target, user);
   const evolutions = getUserEvolutions(user);
   const activeEvolutions = evolutions.filter((evolution) => evolution.durability > 0);
   const bestWeapon = getBestBattleWeapon(user);
@@ -1169,63 +1304,149 @@ function createStatusCardFile(target, user) {
   const durabilityRatio = maxDurability > 0 ? totalDurability / maxDurability : 0;
   const statMax = Math.max(1, battlePower.attack, battlePower.defense, battlePower.luck);
   const fileName = `status-${target.id || 'user'}.png`;
+  const activeText = activeEvolutions.length > 0
+    ? `전투 가능 진화 ${activeEvolutions.length}개 / 전체 ${evolutions.length}개`
+    : '아직 전투 진화가 준비되지 않았습니다.';
+  const bestWeaponText = bestWeapon
+    ? `${bestWeapon.evolution.grade.label} ${bestWeapon.evolution.itemName} +${bestWeapon.evolution.enhanceLevel}`
+    : '전투 가능 무기 없음';
+  const nextTarget = evolutions[0];
+  const nextAction = nextTarget
+    ? `/아이템강화 아이템:${nextTarget.itemName}`
+    : '/낚시 후 /아이템사용';
+  const statRows = [
+    ['공격', battlePower.attack, 0xef4444],
+    ['방어', battlePower.defense, 0x38bdf8],
+    ['행운', battlePower.luck, 0xa78bfa],
+  ].map(([label, value, color], index) => {
+    const y = 560 + index * 82;
+    const ratio = Math.max(0, Math.min(1, value / statMax));
+    return `
+      <text x="92" y="${y + 14}" class="small-label">${escapeSvgText(label)}</text>
+      <rect x="190" y="${y - 8}" width="382" height="30" rx="15" fill="#1f2937"/>
+      <rect x="190" y="${y - 8}" width="${Math.max(8, Math.floor(382 * ratio))}" height="30" rx="15" fill="${colorToHex(color)}"/>
+      <text x="602" y="${y + 16}" class="metric-number">${escapeSvgText(String(value))}</text>
+    `;
+  }).join('');
+  const evolutionRows = evolutions.slice(0, 6).map((evolution, index) => {
+    const y = 960 + index * 78;
+    const enhanceText = evolution.enhanceLevel > 0 ? `+${evolution.enhanceLevel}` : '+0';
+    const nextCost = getItemEnhancementCost(evolution.grade.key, evolution.enhanceLevel);
+    const nextRates = getItemEnhancementRates(evolution.grade.key, evolution.enhanceLevel);
+    const status = evolution.durability > 0 ? '사용 가능' : '파손';
+    const barRatio = evolution.maxDurability > 0 ? evolution.durability / evolution.maxDurability : 0;
+    const gradeColor = colorToHex(getDashboardGradeColor(evolution.grade.key));
+    return `
+      <g>
+        <rect x="72" y="${y - 36}" width="1136" height="62" rx="18" fill="${index % 2 === 0 ? '#101827' : '#172033'}" stroke="#293447"/>
+        <rect x="94" y="${y - 17}" width="18" height="18" rx="5" fill="${gradeColor}"/>
+        <text x="130" y="${y - 4}" class="item-title">${escapeSvgText(`${evolution.grade.label} ${evolution.itemName} ${enhanceText}`)}</text>
+        <text x="560" y="${y - 4}" class="item-sub">${escapeSvgText(status)}</text>
+        <rect x="650" y="${y - 24}" width="210" height="18" rx="9" fill="#1f2937"/>
+        <rect x="650" y="${y - 24}" width="${Math.max(4, Math.floor(210 * barRatio))}" height="18" rx="9" fill="${barRatio > 0.35 ? '#34d399' : '#ef4444'}"/>
+        <text x="880" y="${y - 6}" class="item-sub">${escapeSvgText(`${evolution.durability}/${evolution.maxDurability}`)}</text>
+        <text x="130" y="${y + 18}" class="item-sub">${escapeSvgText(`다음 강화 ${formatEnhancementRates(nextRates)} / ${formatCoins(nextCost)}`)}</text>
+      </g>
+    `;
+  }).join('') || `
+    <rect x="72" y="924" width="1136" height="112" rx="24" fill="#101827" stroke="#293447"/>
+    <text x="108" y="990" class="empty">해금된 진화 아이템이 없습니다. /아이템사용으로 먼저 해금해 주세요.</text>
+  `;
+  const moreEvolutionText = evolutions.length > 6
+    ? `<text x="92" y="1454" class="tiny">외 ${evolutions.length - 6}개 진화 아이템은 /보관함에서 확인</text>`
+    : '';
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+      <defs>
+        <linearGradient id="status-bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#07111f"/>
+          <stop offset="54%" stop-color="#101827"/>
+          <stop offset="100%" stop-color="#1f2937"/>
+        </linearGradient>
+        <linearGradient id="hero" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#2563eb"/>
+          <stop offset="100%" stop-color="#7c3aed"/>
+        </linearGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000000" flood-opacity="0.35"/>
+        </filter>
+      </defs>
+      <style>
+        text { font-family: "Noto Sans CJK KR", "Noto Sans KR", sans-serif; }
+        .eyebrow { font-size: 26px; fill: #bfdbfe; font-weight: 800; letter-spacing: 2px; }
+        .title { font-size: 58px; fill: #f8fafc; font-weight: 900; }
+        .subtitle { font-size: 26px; fill: #dbeafe; font-weight: 600; }
+        .card-label { font-size: 24px; fill: #9ca3af; font-weight: 800; }
+        .card-value { font-size: 38px; fill: #f8fafc; font-weight: 900; }
+        .section-title { font-size: 34px; fill: #f8fafc; font-weight: 900; }
+        .small-label { font-size: 28px; fill: #cbd5e1; font-weight: 800; }
+        .metric-number { font-size: 31px; fill: #f8fafc; font-weight: 900; }
+        .body { font-size: 27px; fill: #e5e7eb; font-weight: 700; }
+        .body-muted { font-size: 24px; fill: #aab6c9; font-weight: 600; }
+        .item-title { font-size: 23px; fill: #f8fafc; font-weight: 900; }
+        .item-sub { font-size: 18px; fill: #aab6c9; font-weight: 600; }
+        .empty { font-size: 26px; fill: #cbd5e1; font-weight: 700; }
+        .tiny { font-size: 20px; fill: #94a3b8; font-weight: 500; }
+      </style>
+      <rect width="${width}" height="${height}" fill="url(#status-bg)"/>
+      <circle cx="1080" cy="134" r="260" fill="#2563eb" opacity="0.12"/>
+      <circle cx="90" cy="1420" r="300" fill="#f59e0b" opacity="0.08"/>
 
-  drawFilledRect(pixels, width, height, 0, 0, width, 96, 0x111827);
-  drawFilledRect(pixels, width, height, 0, 96, width, 4, uiTheme.colors.primary);
-  drawBitmapText(pixels, width, height, 'STATUS DASHBOARD', 36, 28, 0xf8fafc, 3);
-  drawBitmapText(pixels, width, height, displayName.slice(0, 28), 560, 34, 0x93c5fd, 2);
+      <rect x="48" y="48" width="1184" height="210" rx="34" fill="url(#hero)" filter="url(#shadow)"/>
+      <text x="88" y="106" class="eyebrow">NOCOIN STATUS</text>
+      <text x="88" y="176" class="title">${escapeSvgText(displayName)}님의 상태</text>
+      <text x="88" y="222" class="subtitle">${escapeSvgText(activeText)}</text>
 
-  drawMetricCard(pixels, width, height, 36, 124, 205, 96, 'BALANCE', compactNumber(user.balance || 0), 0xfacc15);
-  drawMetricCard(pixels, width, height, 263, 124, 205, 96, 'POWER', compactNumber(score), 0x60a5fa);
-  drawMetricCard(pixels, width, height, 490, 124, 205, 96, 'WEAPONS', `${activeEvolutions.length}/${evolutions.length}`, 0x34d399);
-  drawMetricCard(pixels, width, height, 717, 124, 205, 96, 'TICKETS', `${user.protectionTickets || 0}`, 0xf472b6);
+      <g filter="url(#shadow)">
+        <rect x="48" y="302" width="270" height="132" rx="26" fill="#111827" stroke="#293447"/>
+        <rect x="348" y="302" width="270" height="132" rx="26" fill="#111827" stroke="#293447"/>
+        <rect x="648" y="302" width="270" height="132" rx="26" fill="#111827" stroke="#293447"/>
+        <rect x="948" y="302" width="284" height="132" rx="26" fill="#111827" stroke="#293447"/>
+      </g>
+      <text x="78" y="354" class="card-label">잔액</text>
+      <text x="78" y="404" class="card-value">${escapeSvgText(formatCoins(user.balance || 0))}</text>
+      <text x="378" y="354" class="card-label">전투력</text>
+      <text x="378" y="404" class="card-value">${escapeSvgText(`${score}점`)}</text>
+      <text x="678" y="354" class="card-label">진화 무기</text>
+      <text x="678" y="404" class="card-value">${activeEvolutions.length}/${evolutions.length}개</text>
+      <text x="978" y="354" class="card-label">방지권</text>
+      <text x="978" y="404" class="card-value">${user.protectionTickets || 0}장</text>
 
-  drawFilledRect(pixels, width, height, 36, 248, 420, 250, 0x111827);
-  drawRectBorder(pixels, width, height, 36, 248, 420, 250, 0x293447, 2);
-  drawBitmapText(pixels, width, height, 'BATTLE STATS', 60, 274, 0xf8fafc, 2);
-  [
-    ['ATK', battlePower.attack, 0xef4444],
-    ['DEF', battlePower.defense, 0x38bdf8],
-    ['LUCK', battlePower.luck, 0xa78bfa],
-  ].forEach(([label, value, color], index) => {
-    const y = 322 + index * 48;
-    drawBitmapText(pixels, width, height, label, 60, y, 0x9ca3af, 2);
-    drawProgressBarImage(pixels, width, height, 150, y - 4, 210, 20, value / statMax, color);
-    drawBitmapText(pixels, width, height, compactNumber(value), 378, y - 2, 0xf8fafc, 2);
+      <rect x="48" y="482" width="584" height="334" rx="30" fill="#111827" stroke="#293447" filter="url(#shadow)"/>
+      <text x="84" y="532" class="section-title">대표 무기와 스탯</text>
+      <text x="84" y="864" class="body">${escapeSvgText(bestWeaponText)}</text>
+      ${statRows}
+
+      <rect x="672" y="482" width="560" height="334" rx="30" fill="#111827" stroke="#293447" filter="url(#shadow)"/>
+      <text x="708" y="532" class="section-title">내구도와 기록</text>
+      <rect x="708" y="574" width="408" height="34" rx="17" fill="#1f2937"/>
+      <rect x="708" y="574" width="${Math.max(6, Math.floor(408 * durabilityRatio))}" height="34" rx="17" fill="${durabilityRatio > 0.35 ? '#34d399' : '#ef4444'}"/>
+      <text x="1134" y="603" class="metric-number">${Math.round(durabilityRatio * 100)}%</text>
+      <text x="708" y="666" class="body">${escapeSvgText(`전체 내구도 ${totalDurability}/${maxDurability || 0}`)}</text>
+      <text x="708" y="716" class="body-muted">${escapeSvgText(`결투 ${stats.battlesWon || 0}승 ${stats.battlesLost || 0}패 / 수익 ${formatCoins(stats.battleProfit || 0)}`)}</text>
+      <text x="708" y="762" class="body-muted">${escapeSvgText(`강화 ${stats.itemEnhanceSuccesses || 0}/${stats.itemEnhanceAttempts || 0} 성공 / 사용 ${formatCoins(stats.itemEnhanceSpent || 0)}`)}</text>
+
+      <rect x="48" y="872" width="1184" height="610" rx="30" fill="#0f172a" stroke="#293447" filter="url(#shadow)"/>
+      <text x="84" y="930" class="section-title">아이템 상태</text>
+      ${evolutionRows}
+      ${moreEvolutionText}
+
+      <rect x="48" y="1502" width="1184" height="44" rx="22" fill="#172033"/>
+      <text x="82" y="1533" class="tiny">${escapeSvgText(`다음 행동: ${nextAction} · 상세 보관함은 /보관함`)}</text>
+    </svg>
+  `;
+  const resvg = new Resvg(svg, {
+    fitTo: { mode: 'original' },
+    font: {
+      fontFiles: dashboardFontFiles,
+      loadSystemFonts: dashboardFontFiles.length === 0,
+      defaultFontFamily: 'Noto Sans CJK KR',
+    },
   });
-  drawBitmapText(pixels, width, height, `BATTLE ${stats.battlesWon || 0}W/${stats.battlesLost || 0}L`, 60, 470, 0xd1d5db, 2);
-
-  drawFilledRect(pixels, width, height, 504, 248, 418, 250, 0x111827);
-  drawRectBorder(pixels, width, height, 504, 248, 418, 250, 0x293447, 2);
-  drawBitmapText(pixels, width, height, 'DURABILITY', 528, 274, 0xf8fafc, 2);
-  drawProgressBarImage(pixels, width, height, 528, 318, 340, 28, durabilityRatio, durabilityRatio > 0.35 ? 0x34d399 : 0xef4444);
-  drawBitmapText(pixels, width, height, `${Math.round(durabilityRatio * 100)}%`, 884, 320, 0xf8fafc, 2);
-  drawBitmapText(pixels, width, height, `ENH ${stats.itemEnhanceSuccesses || 0}/${stats.itemEnhanceAttempts || 0}`, 528, 374, 0xd1d5db, 2);
-
-  const weaponLines = evolutions.slice(0, 3);
-  if (weaponLines.length === 0) {
-    drawBitmapText(pixels, width, height, 'NO EVOLVED ITEMS', 528, 428, 0x9ca3af, 2);
-  } else {
-    weaponLines.forEach((evolution, index) => {
-      const y = 424 + index * 32;
-      const gradeColor = getDashboardGradeColor(evolution.grade.key);
-      drawFilledRect(pixels, width, height, 528, y, 14, 14, gradeColor);
-      drawBitmapText(
-        pixels,
-        width,
-        height,
-        `${evolution.grade.key.slice(0, 4)} +${evolution.enhanceLevel} ${evolution.durability}/${evolution.maxDurability}`,
-        554,
-        y - 2,
-        0xd1d5db,
-        2,
-      );
-    });
-  }
 
   return {
     fileName,
-    attachment: new AttachmentBuilder(encodePng(width, height, pixels), { name: fileName }),
+    attachment: new AttachmentBuilder(resvg.render().asPng(), { name: fileName }),
   };
 }
 
@@ -2483,63 +2704,6 @@ function createInventoryEmbed(target, user) {
   }
 
   return embed;
-}
-
-function createStatusEmbed(target, user) {
-  const evolutions = getUserEvolutions(user);
-  const stats = user.stats || {};
-  const displayName = getDisplayName(target, user);
-  const activeEvolutions = evolutions.filter((evolution) => evolution.durability > 0);
-  const bestWeapon = getBestBattleWeapon(user);
-  const totalDurability = evolutions.reduce((sum, evolution) => sum + evolution.durability, 0);
-  const maxDurability = evolutions.reduce((sum, evolution) => sum + evolution.maxDurability, 0);
-  const evolutionLines = evolutions.length > 0
-    ? evolutions.slice(0, 8).map((evolution, index) => {
-      const enhanceText = evolution.enhanceLevel > 0 ? `+${evolution.enhanceLevel}` : '+0';
-      const nextCost = getItemEnhancementCost(evolution.grade.key, evolution.enhanceLevel);
-      const nextRates = getItemEnhancementRates(evolution.grade.key, evolution.enhanceLevel);
-      const usable = evolution.durability > 0 ? '사용 가능' : '파손';
-      const weaponPower = evolution.durability > 0 ? getWeaponBattlePower(evolution) : null;
-      return [
-        `${index + 1}. ${formatItemGradeLabel(evolution.grade)} ${evolution.itemName} ${enhanceText} (${usable})`,
-        `${formatDurabilityLine(evolution.durability, evolution.maxDurability)} · ${weaponPower ? formatStatLine(weaponPower) : '전투 불가'} · 다음 강화 ${formatEnhancementRates(nextRates)} / ${formatCoins(nextCost)}`,
-      ].join('\n');
-    }).join('\n\n')
-    : '해금된 진화 아이템이 없습니다. `/아이템사용`으로 먼저 해금해 주세요.';
-  const nextTarget = evolutions[0];
-  const nextAction = nextTarget
-    ? `추천 강화: \`/아이템강화 아이템:${nextTarget.itemName}\`\n결투 전 확인: \`/상태\``
-    : '보관함 아이템을 얻은 뒤 `/아이템사용`으로 전투 진화를 해금해 주세요.';
-
-  return createUiEmbed({
-    color: uiTheme.colors.primary,
-    title: `${displayName}님의 상태`,
-    description: activeEvolutions.length > 0
-      ? `전투 가능 진화 ${activeEvolutions.length}개 / 전체 ${evolutions.length}개`
-      : '아직 전투 진화가 준비되지 않았습니다.',
-  })
-    .addFields(
-      { name: '자산', value: `${formatCoins(user.balance || 0)}\n방지권 ${user.protectionTickets || 0}장`, inline: true },
-      {
-        name: '대표 무기',
-        value: bestWeapon
-          ? `${formatItemGradeLabel(bestWeapon.evolution.grade)} ${bestWeapon.evolution.itemName}\n${formatStatLine(bestWeapon.power)}`
-          : '전투 가능 무기 없음',
-        inline: true,
-      },
-      {
-        name: '내구도',
-        value: evolutions.length > 0 ? formatDurabilityLine(totalDurability, maxDurability, 12) : '표시할 아이템 없음',
-        inline: false,
-      },
-      { name: '아이템 상태', value: truncateText(evolutionLines, 1024), inline: false },
-      {
-        name: '기록',
-        value: `결투 ${stats.battlesWon || 0}승 ${stats.battlesLost || 0}패 / 강화 ${stats.itemEnhanceSuccesses || 0}/${stats.itemEnhanceAttempts || 0}`,
-        inline: false,
-      },
-      { name: '다음 행동', value: nextAction, inline: false },
-    );
 }
 
 function createItemRatesEmbed() {
@@ -4046,6 +4210,7 @@ async function handleHelp(interaction) {
         ['/동전던지기', '앞면/뒷면 도박'],
         ['/주사위', '1-6 숫자 맞히기'],
         ['/배치', '롤 배치고사 확률 도박'],
+        ['/배치확률', '배치고사 전체 확률표 PNG'],
         ['/사정', '초야/세냥/남랭 거리 맞히기'],
         ['/블랙잭', '딜러와 블랙잭'],
       ]),
@@ -4379,11 +4544,8 @@ async function handleStatus(interaction) {
     };
   });
   const imageFile = createStatusCardFile(target, result.user);
-  const embed = createStatusEmbed(target, result.user)
-    .setImage(`attachment://${imageFile.fileName}`);
 
   await reply(interaction, {
-    embeds: [embed],
     files: [imageFile.attachment],
   });
 }
@@ -6412,7 +6574,7 @@ async function handlePlacementExam(interaction) {
     { name: '최대 손실', value: `${formatCoins(result.maxLoss)} (베팅액 x ${placementExamMaxLossMultiplier}배)`, inline: true },
     { name: '현재 잔액', value: formatCoins(result.balance), inline: true },
     { name: '주의', value: placementExamWarning, inline: false },
-    { name: '확률표', value: formatPlacementExamOdds(), inline: false },
+    { name: '전체 확률표', value: '`/배치확률`로 PNG 표를 확인할 수 있습니다.', inline: false },
   );
 
   const payload = {
@@ -6425,6 +6587,23 @@ async function handlePlacementExam(interaction) {
   }
 
   await reply(interaction, payload);
+}
+
+async function handlePlacementExamOdds(interaction) {
+  const imageFile = createPlacementExamOddsPngFile();
+  const embed = createUiEmbed({
+    color: uiTheme.colors.primary,
+    title: '롤 배치고사 확률표',
+    description: '전체 배치고사 보상과 확률을 PNG 이미지로 정리했습니다.',
+  }).setImage(`attachment://${imageFile.fileName}`)
+    .addFields(
+      { name: '주의', value: placementExamWarning, inline: false },
+    );
+
+  await reply(interaction, {
+    embeds: [embed],
+    files: [imageFile.attachment],
+  });
 }
 
 async function handleWaterGun(interaction) {
@@ -6925,6 +7104,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case '배치':
         await handlePlacementExam(interaction);
+        break;
+      case '배치확률':
+        await handlePlacementExamOdds(interaction);
         break;
       case '사정':
         await handleWaterGun(interaction);
