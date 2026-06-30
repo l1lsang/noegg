@@ -465,6 +465,24 @@ const lotteryTiers = [
   { threshold: 0.3975, label: '본전', multiplier: 1, color: uiTheme.colors.warning },
 ];
 
+const placementExamIconBaseUrl = 'https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-shared-components/global/default/images';
+const placementExamTiers = [
+  { key: 'challenger', name: '챌린저', multiplier: 100, chancePercent: 0.02, color: 0xcfefff, accent: 0xf2d16b, iconUrl: `${placementExamIconBaseUrl}/challenger.png` },
+  { key: 'grandmaster', name: '그랜드마스터', multiplier: 50, chancePercent: 0.04, color: 0xd04d4d, accent: 0xf0b878, iconUrl: `${placementExamIconBaseUrl}/grandmaster.png` },
+  { key: 'master', name: '마스터', multiplier: 20, chancePercent: 0.34, color: 0x9a59ff, accent: 0xf0dcff, iconUrl: `${placementExamIconBaseUrl}/master.png` },
+  { key: 'diamond', name: '다이아몬드', multiplier: 5, chancePercent: 2.6, color: 0x5c8cff, accent: 0xb5d7ff, iconUrl: `${placementExamIconBaseUrl}/diamond.png` },
+  { key: 'emerald', name: '에메랄드', multiplier: 3, chancePercent: 5, color: 0x39b474, accent: 0xa6f0c5, iconUrl: `${placementExamIconBaseUrl}/emerald.png` },
+  { key: 'platinum', name: '플래티넘', multiplier: 2, chancePercent: 9.5, color: 0x7bd0c0, accent: 0xd7fff5, iconUrl: `${placementExamIconBaseUrl}/platinum.png` },
+  { key: 'gold', name: '골드', multiplier: 1, chancePercent: 28, color: 0xd6a64d, accent: 0xffe6a3, iconUrl: `${placementExamIconBaseUrl}/gold.png` },
+  { key: 'silver', name: '실버', multiplier: -1, chancePercent: 30, color: 0x9aa7c7, accent: 0xe1e7f4, iconUrl: `${placementExamIconBaseUrl}/silver.png` },
+  { key: 'bronze', name: '브론즈', multiplier: -2, chancePercent: 20, color: 0xb06f55, accent: 0xf0b18f, iconUrl: `${placementExamIconBaseUrl}/bronze.png` },
+  { key: 'iron', name: '아이언', multiplier: -5, chancePercent: 4.5, color: 0x6b5c60, accent: 0xbda7aa, iconUrl: `${placementExamIconBaseUrl}/iron.png` },
+];
+const placementExamMaxLossMultiplier = Math.max(
+  ...placementExamTiers.map((tier) => Math.max(0, -tier.multiplier)),
+);
+const placementExamWarning = '주의: 베팅을 건 금액보다 더 큰 금액을 잃을 수 있습니다.';
+
 function getLotteryTierChance(tier, index) {
   const previousThreshold = index > 0 ? lotteryTiers[index - 1].threshold : 0;
   return tier.threshold - previousThreshold;
@@ -475,6 +493,33 @@ function formatLotteryOdds() {
     .map((tier, index) => `${tier.label} ${formatChance(getLotteryTierChance(tier, index))} (${tier.multiplier}배)`);
   const missChance = 1 - lotteryTiers[lotteryTiers.length - 1].threshold;
   return [...tierLines, `꽝 ${formatChance(missChance)} (0배)`].join('\n');
+}
+
+function formatPlacementExamChance(tier) {
+  return `${tier.chancePercent}%`;
+}
+
+function formatPlacementExamMultiplier(tier) {
+  const sign = tier.multiplier > 0 ? '+' : '-';
+  return `${sign} 베팅액 x ${Math.abs(tier.multiplier)}배`;
+}
+
+function formatPlacementExamProfit(profit) {
+  if (profit > 0) {
+    return `+ ${formatCoins(profit)}`;
+  }
+
+  if (profit < 0) {
+    return `- ${formatCoins(Math.abs(profit))}`;
+  }
+
+  return formatCoins(0);
+}
+
+function formatPlacementExamOdds() {
+  return placementExamTiers
+    .map((tier) => `${tier.name} ${formatPlacementExamMultiplier(tier)} · ${formatPlacementExamChance(tier)}`)
+    .join('\n');
 }
 
 function drawLottery(wager) {
@@ -491,6 +536,20 @@ function drawLottery(wager) {
     payout,
     profit: payout - wager,
   };
+}
+
+function drawPlacementExam() {
+  const roll = Math.random() * 100;
+  let cumulative = 0;
+
+  for (const tier of placementExamTiers) {
+    cumulative += tier.chancePercent;
+    if (roll < cumulative) {
+      return tier;
+    }
+  }
+
+  return placementExamTiers[placementExamTiers.length - 1];
 }
 
 function rollCasinoWin(chance) {
@@ -791,6 +850,451 @@ function drawCircle(pixels, width, height, centerX, centerY, radius, color) {
       }
     }
   }
+}
+
+const bitmapFont = {
+  ' ': ['000', '000', '000', '000', '000', '000', '000'],
+  '!': ['010', '010', '010', '010', '010', '000', '010'],
+  '#': ['01010', '01010', '11111', '01010', '11111', '01010', '01010'],
+  '%': ['11001', '11010', '00100', '01000', '10011', '01011', '10011'],
+  '+': ['00000', '00100', '00100', '11111', '00100', '00100', '00000'],
+  '-': ['00000', '00000', '00000', '11111', '00000', '00000', '00000'],
+  '/': ['00001', '00010', '00100', '01000', '10000', '00000', '00000'],
+  ':': ['000', '010', '010', '000', '010', '010', '000'],
+  '.': ['000', '000', '000', '000', '000', '010', '010'],
+  ',': ['000', '000', '000', '000', '010', '010', '100'],
+  '(': ['001', '010', '100', '100', '100', '010', '001'],
+  ')': ['100', '010', '001', '001', '001', '010', '100'],
+  '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+  '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  '2': ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
+  '3': ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
+  '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  '5': ['11111', '10000', '10000', '11110', '00001', '00001', '11110'],
+  '6': ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
+  '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  '9': ['01110', '10001', '10001', '01111', '00001', '00010', '11100'],
+  'A': ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+  'B': ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
+  'C': ['01111', '10000', '10000', '10000', '10000', '10000', '01111'],
+  'D': ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
+  'E': ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+  'F': ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
+  'G': ['01111', '10000', '10000', '10011', '10001', '10001', '01110'],
+  'H': ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
+  'I': ['01110', '00100', '00100', '00100', '00100', '00100', '01110'],
+  'J': ['00111', '00010', '00010', '00010', '00010', '10010', '01100'],
+  'K': ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
+  'L': ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
+  'M': ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
+  'N': ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
+  'O': ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+  'P': ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
+  'Q': ['01110', '10001', '10001', '10001', '10101', '10010', '01101'],
+  'R': ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+  'S': ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
+  'T': ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
+  'U': ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
+  'V': ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
+  'W': ['10001', '10001', '10001', '10101', '10101', '11011', '10001'],
+  'X': ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
+  'Y': ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
+  'Z': ['11111', '00001', '00010', '00100', '01000', '10000', '11111'],
+  '?': ['01110', '10001', '00001', '00010', '00100', '00000', '00100'],
+};
+
+function drawBitmapText(pixels, width, height, rawText, x, y, color, scale = 2) {
+  const text = String(rawText || '').toUpperCase();
+  let cursorX = x;
+  let cursorY = y;
+
+  for (const character of text) {
+    if (character === '\n') {
+      cursorX = x;
+      cursorY += 9 * scale;
+      continue;
+    }
+
+    const glyph = bitmapFont[character] || bitmapFont['?'];
+    const glyphWidth = glyph[0].length;
+    glyph.forEach((row, rowIndex) => {
+      for (let columnIndex = 0; columnIndex < row.length; columnIndex += 1) {
+        if (row[columnIndex] !== '1') {
+          continue;
+        }
+
+        drawFilledRect(
+          pixels,
+          width,
+          height,
+          cursorX + columnIndex * scale,
+          cursorY + rowIndex * scale,
+          scale,
+          scale,
+          color,
+        );
+      }
+    });
+
+    cursorX += (glyphWidth + 1) * scale;
+  }
+}
+
+function drawRectBorder(pixels, width, height, x, y, rectWidth, rectHeight, color, thickness = 2) {
+  drawFilledRect(pixels, width, height, x, y, rectWidth, thickness, color);
+  drawFilledRect(pixels, width, height, x, y + rectHeight - thickness, rectWidth, thickness, color);
+  drawFilledRect(pixels, width, height, x, y, thickness, rectHeight, color);
+  drawFilledRect(pixels, width, height, x + rectWidth - thickness, y, thickness, rectHeight, color);
+}
+
+function drawMetricCard(pixels, width, height, x, y, rectWidth, rectHeight, label, value, color) {
+  drawFilledRect(pixels, width, height, x, y, rectWidth, rectHeight, 0x111827);
+  drawRectBorder(pixels, width, height, x, y, rectWidth, rectHeight, 0x293447, 2);
+  drawFilledRect(pixels, width, height, x, y, 8, rectHeight, color);
+  drawBitmapText(pixels, width, height, label, x + 20, y + 18, 0x9ca3af, 2);
+  drawBitmapText(pixels, width, height, value, x + 20, y + 48, 0xf8fafc, 3);
+}
+
+function drawProgressBarImage(pixels, width, height, x, y, barWidth, barHeight, ratio, color) {
+  const safeRatio = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0));
+  drawFilledRect(pixels, width, height, x, y, barWidth, barHeight, 0x1f2937);
+  drawFilledRect(pixels, width, height, x, y, Math.max(2, Math.floor(barWidth * safeRatio)), barHeight, color);
+  drawRectBorder(pixels, width, height, x, y, barWidth, barHeight, 0x374151, 2);
+}
+
+function compactNumber(value) {
+  const number = Number.isFinite(value) ? Math.floor(value) : 0;
+  const sign = number < 0 ? '-' : '';
+  const abs = Math.abs(number);
+
+  if (abs >= 1000000000) {
+    return `${sign}${Math.floor(abs / 100000000) / 10}B`;
+  }
+
+  if (abs >= 1000000) {
+    return `${sign}${Math.floor(abs / 100000) / 10}M`;
+  }
+
+  if (abs >= 10000) {
+    return `${sign}${Math.floor(abs / 100) / 10}K`;
+  }
+
+  return `${number}`;
+}
+
+function toAsciiText(value, fallback = 'ITEM') {
+  const text = String(value || '')
+    .replace(/[^\x20-\x7e]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text || fallback;
+}
+
+function getDashboardGradeColor(gradeKey) {
+  return {
+    common: 0xbfc7d5,
+    uncommon: 0x40c463,
+    rare: 0x3b82f6,
+    epic: 0xa855f7,
+    legendary: 0xfacc15,
+    mythic: 0xef4444,
+  }[gradeKey] || 0x94a3b8;
+}
+
+function drawFilledPolygon(pixels, width, height, points, color) {
+  const minY = Math.max(0, Math.floor(Math.min(...points.map((point) => point.y))));
+  const maxY = Math.min(height - 1, Math.ceil(Math.max(...points.map((point) => point.y))));
+
+  for (let y = minY; y <= maxY; y += 1) {
+    const intersections = [];
+
+    for (let index = 0; index < points.length; index += 1) {
+      const start = points[index];
+      const end = points[(index + 1) % points.length];
+
+      if ((start.y <= y && end.y > y) || (end.y <= y && start.y > y)) {
+        const ratio = (y - start.y) / (end.y - start.y);
+        intersections.push(start.x + ratio * (end.x - start.x));
+      }
+    }
+
+    intersections.sort((a, b) => a - b);
+    for (let index = 0; index < intersections.length; index += 2) {
+      const left = Math.max(0, Math.ceil(intersections[index]));
+      const right = Math.min(width - 1, Math.floor(intersections[index + 1]));
+
+      for (let x = left; x <= right; x += 1) {
+        drawPixel(pixels, width, height, x, y, color);
+      }
+    }
+  }
+}
+
+function drawMirroredPolygon(pixels, width, height, points, color) {
+  drawFilledPolygon(pixels, width, height, points, color);
+  drawFilledPolygon(
+    pixels,
+    width,
+    height,
+    points.map((point) => ({ x: width - point.x, y: point.y })),
+    color,
+  );
+}
+
+function drawPlacementExamTierIcon(pixels, width, height, tier) {
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const primary = tier.color;
+  const accent = tier.accent;
+  const isLossTier = tier.multiplier < 0;
+  const highTierScale = tier.multiplier >= 20 ? 1 : tier.multiplier >= 5 ? 0.82 : tier.multiplier > 0 ? 0.68 : 0.56;
+
+  drawCircle(pixels, width, height, centerX, centerY, 116, 0x111827);
+  drawCircle(pixels, width, height, centerX, centerY, 104, 0x182234);
+  drawCircle(pixels, width, height, centerX, centerY, 92, 0x0b1020);
+
+  drawMirroredPolygon(
+    pixels,
+    width,
+    height,
+    [
+      { x: centerX, y: 42 },
+      { x: centerX - 82 * highTierScale, y: 76 },
+      { x: centerX - 36 * highTierScale, y: 112 },
+      { x: centerX - 100 * highTierScale, y: 160 },
+      { x: centerX - 28 * highTierScale, y: 148 },
+    ],
+    primary,
+  );
+  drawMirroredPolygon(
+    pixels,
+    width,
+    height,
+    [
+      { x: centerX, y: 64 },
+      { x: centerX - 56 * highTierScale, y: 90 },
+      { x: centerX - 24 * highTierScale, y: 118 },
+      { x: centerX - 66 * highTierScale, y: 150 },
+      { x: centerX - 18 * highTierScale, y: 140 },
+    ],
+    0x0b1020,
+  );
+
+  drawFilledPolygon(
+    pixels,
+    width,
+    height,
+    [
+      { x: centerX, y: 34 },
+      { x: centerX + 44, y: centerY },
+      { x: centerX, y: 222 },
+      { x: centerX - 44, y: centerY },
+    ],
+    primary,
+  );
+  drawFilledPolygon(
+    pixels,
+    width,
+    height,
+    [
+      { x: centerX, y: 58 },
+      { x: centerX + 28, y: centerY },
+      { x: centerX, y: 196 },
+      { x: centerX - 28, y: centerY },
+    ],
+    0x0b1020,
+  );
+  drawFilledPolygon(
+    pixels,
+    width,
+    height,
+    [
+      { x: centerX, y: 76 },
+      { x: centerX + 18, y: centerY },
+      { x: centerX, y: 178 },
+      { x: centerX - 18, y: centerY },
+    ],
+    accent,
+  );
+
+  if (!isLossTier) {
+    drawFilledPolygon(
+      pixels,
+      width,
+      height,
+      [
+        { x: centerX, y: 24 },
+        { x: centerX + 16, y: 54 },
+        { x: centerX, y: 70 },
+        { x: centerX - 16, y: 54 },
+      ],
+      accent,
+    );
+  }
+
+  drawLine(pixels, width, height, centerX - 74, 196, centerX, 224, accent, 5);
+  drawLine(pixels, width, height, centerX + 74, 196, centerX, 224, accent, 5);
+  drawCircle(pixels, width, height, centerX, centerY, isLossTier ? 10 : 13, 0xffffff);
+  drawCircle(pixels, width, height, centerX, centerY, isLossTier ? 5 : 7, accent);
+}
+
+function createPlacementExamTierIconFile(tier) {
+  const width = 256;
+  const height = 256;
+  const pixels = createPixelBuffer(width, height, 0x070b14);
+  const fileName = `placement-${tier.key}.png`;
+
+  drawPlacementExamTierIcon(pixels, width, height, tier);
+
+  return {
+    fileName,
+    attachment: new AttachmentBuilder(encodePng(width, height, pixels), { name: fileName }),
+  };
+}
+
+function createStatusCardFile(target, user) {
+  const width = 960;
+  const height = 560;
+  const pixels = createPixelBuffer(width, height, 0x080f1f);
+  const displayName = toAsciiText(getDisplayName(target, user), 'USER');
+  const evolutions = getUserEvolutions(user);
+  const activeEvolutions = evolutions.filter((evolution) => evolution.durability > 0);
+  const bestWeapon = getBestBattleWeapon(user);
+  const battlePower = bestWeapon?.power || getUserPower(user);
+  const stats = user.stats || {};
+  const score = Math.floor(getPowerScore(battlePower));
+  const totalDurability = evolutions.reduce((sum, evolution) => sum + evolution.durability, 0);
+  const maxDurability = evolutions.reduce((sum, evolution) => sum + evolution.maxDurability, 0);
+  const durabilityRatio = maxDurability > 0 ? totalDurability / maxDurability : 0;
+  const statMax = Math.max(1, battlePower.attack, battlePower.defense, battlePower.luck);
+  const fileName = `status-${target.id || 'user'}.png`;
+
+  drawFilledRect(pixels, width, height, 0, 0, width, 96, 0x111827);
+  drawFilledRect(pixels, width, height, 0, 96, width, 4, uiTheme.colors.primary);
+  drawBitmapText(pixels, width, height, 'STATUS DASHBOARD', 36, 28, 0xf8fafc, 3);
+  drawBitmapText(pixels, width, height, displayName.slice(0, 28), 560, 34, 0x93c5fd, 2);
+
+  drawMetricCard(pixels, width, height, 36, 124, 205, 96, 'BALANCE', compactNumber(user.balance || 0), 0xfacc15);
+  drawMetricCard(pixels, width, height, 263, 124, 205, 96, 'POWER', compactNumber(score), 0x60a5fa);
+  drawMetricCard(pixels, width, height, 490, 124, 205, 96, 'WEAPONS', `${activeEvolutions.length}/${evolutions.length}`, 0x34d399);
+  drawMetricCard(pixels, width, height, 717, 124, 205, 96, 'TICKETS', `${user.protectionTickets || 0}`, 0xf472b6);
+
+  drawFilledRect(pixels, width, height, 36, 248, 420, 250, 0x111827);
+  drawRectBorder(pixels, width, height, 36, 248, 420, 250, 0x293447, 2);
+  drawBitmapText(pixels, width, height, 'BATTLE STATS', 60, 274, 0xf8fafc, 2);
+  [
+    ['ATK', battlePower.attack, 0xef4444],
+    ['DEF', battlePower.defense, 0x38bdf8],
+    ['LUCK', battlePower.luck, 0xa78bfa],
+  ].forEach(([label, value, color], index) => {
+    const y = 322 + index * 48;
+    drawBitmapText(pixels, width, height, label, 60, y, 0x9ca3af, 2);
+    drawProgressBarImage(pixels, width, height, 150, y - 4, 210, 20, value / statMax, color);
+    drawBitmapText(pixels, width, height, compactNumber(value), 378, y - 2, 0xf8fafc, 2);
+  });
+  drawBitmapText(pixels, width, height, `BATTLE ${stats.battlesWon || 0}W/${stats.battlesLost || 0}L`, 60, 470, 0xd1d5db, 2);
+
+  drawFilledRect(pixels, width, height, 504, 248, 418, 250, 0x111827);
+  drawRectBorder(pixels, width, height, 504, 248, 418, 250, 0x293447, 2);
+  drawBitmapText(pixels, width, height, 'DURABILITY', 528, 274, 0xf8fafc, 2);
+  drawProgressBarImage(pixels, width, height, 528, 318, 340, 28, durabilityRatio, durabilityRatio > 0.35 ? 0x34d399 : 0xef4444);
+  drawBitmapText(pixels, width, height, `${Math.round(durabilityRatio * 100)}%`, 884, 320, 0xf8fafc, 2);
+  drawBitmapText(pixels, width, height, `ENH ${stats.itemEnhanceSuccesses || 0}/${stats.itemEnhanceAttempts || 0}`, 528, 374, 0xd1d5db, 2);
+
+  const weaponLines = evolutions.slice(0, 3);
+  if (weaponLines.length === 0) {
+    drawBitmapText(pixels, width, height, 'NO EVOLVED ITEMS', 528, 428, 0x9ca3af, 2);
+  } else {
+    weaponLines.forEach((evolution, index) => {
+      const y = 424 + index * 32;
+      const gradeColor = getDashboardGradeColor(evolution.grade.key);
+      drawFilledRect(pixels, width, height, 528, y, 14, 14, gradeColor);
+      drawBitmapText(
+        pixels,
+        width,
+        height,
+        `${evolution.grade.key.slice(0, 4)} +${evolution.enhanceLevel} ${evolution.durability}/${evolution.maxDurability}`,
+        554,
+        y - 2,
+        0xd1d5db,
+        2,
+      );
+    });
+  }
+
+  return {
+    fileName,
+    attachment: new AttachmentBuilder(encodePng(width, height, pixels), { name: fileName }),
+  };
+}
+
+function createInventoryCardFile(target, user) {
+  const width = 960;
+  const height = 620;
+  const pixels = createPixelBuffer(width, height, 0x08111d);
+  const displayName = toAsciiText(getDisplayName(target, user), 'USER');
+  const items = getInventoryItems(user);
+  const totalCount = items.reduce((sum, item) => sum + item.count, 0);
+  const totalValue = items.reduce((sum, item) => sum + item.totalValue, 0);
+  const gradeCounts = new Map();
+  const fileName = `inventory-${target.id || 'user'}.png`;
+
+  for (const item of items) {
+    const grade = getItemGradeConfig(getItemEvolution(item.name).grade);
+    gradeCounts.set(grade.key, (gradeCounts.get(grade.key) || 0) + item.count);
+  }
+
+  drawFilledRect(pixels, width, height, 0, 0, width, 96, 0x102033);
+  drawFilledRect(pixels, width, height, 0, 96, width, 4, uiTheme.colors.inventory);
+  drawBitmapText(pixels, width, height, 'INVENTORY BOARD', 36, 28, 0xf8fafc, 3);
+  drawBitmapText(pixels, width, height, displayName.slice(0, 28), 566, 34, 0x7dd3fc, 2);
+
+  drawMetricCard(pixels, width, height, 36, 124, 205, 96, 'TYPES', `${items.length}`, 0x38bdf8);
+  drawMetricCard(pixels, width, height, 263, 124, 205, 96, 'TOTAL', `${totalCount}`, 0x34d399);
+  drawMetricCard(pixels, width, height, 490, 124, 205, 96, 'VALUE', compactNumber(totalValue), 0xfacc15);
+  drawMetricCard(pixels, width, height, 717, 124, 205, 96, 'TICKETS', `${user.protectionTickets || 0}`, 0xf472b6);
+
+  drawFilledRect(pixels, width, height, 36, 248, 420, 316, 0x111827);
+  drawRectBorder(pixels, width, height, 36, 248, 420, 316, 0x293447, 2);
+  drawBitmapText(pixels, width, height, 'GRADE MIX', 60, 274, 0xf8fafc, 2);
+  ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythic'].forEach((gradeKey, index) => {
+    const y = 320 + index * 38;
+    const count = gradeCounts.get(gradeKey) || 0;
+    const ratio = totalCount > 0 ? count / totalCount : 0;
+    drawBitmapText(pixels, width, height, gradeKey.slice(0, 6), 60, y, 0x9ca3af, 2);
+    drawProgressBarImage(pixels, width, height, 174, y - 4, 190, 18, ratio, getDashboardGradeColor(gradeKey));
+    drawBitmapText(pixels, width, height, `${count}`, 382, y - 2, 0xf8fafc, 2);
+  });
+
+  drawFilledRect(pixels, width, height, 504, 248, 418, 316, 0x111827);
+  drawRectBorder(pixels, width, height, 504, 248, 418, 316, 0x293447, 2);
+  drawBitmapText(pixels, width, height, 'TOP ITEMS', 528, 274, 0xf8fafc, 2);
+
+  if (items.length === 0) {
+    drawBitmapText(pixels, width, height, 'EMPTY INVENTORY', 528, 336, 0x9ca3af, 2);
+  } else {
+    items.slice(0, 7).forEach((item, index) => {
+      const grade = getItemGradeConfig(getItemEvolution(item.name).grade);
+      const y = 320 + index * 34;
+      drawFilledRect(pixels, width, height, 528, y, 14, 14, getDashboardGradeColor(grade.key));
+      drawBitmapText(
+        pixels,
+        width,
+        height,
+        `#${index + 1} ${grade.key.slice(0, 4)} X${item.count} V${compactNumber(item.bestValue || 0)}`,
+        552,
+        y - 2,
+        0xd1d5db,
+        2,
+      );
+    });
+  }
+
+  return {
+    fileName,
+    attachment: new AttachmentBuilder(encodePng(width, height, pixels), { name: fileName }),
+  };
 }
 
 function encodePng(width, height, pixels) {
@@ -3112,6 +3616,27 @@ async function settleInstantGamble({ guildId, discordUser, wager, multiplier, di
   });
 }
 
+async function settlePlacementExam({ guildId, discordUser, wager }) {
+  return store.run((data) => {
+    const guild = store.ensureGuild(data, guildId);
+    const user = store.ensureUser(guild, discordUser);
+    const maxLoss = wager * placementExamMaxLossMultiplier;
+
+    const tier = drawPlacementExam();
+    const profit = wager * tier.multiplier;
+    user.balance += profit;
+    recordGamblingResult(user, profit > 0 ? 'win' : profit < 0 ? 'loss' : 'push', profit, 'placement');
+
+    return {
+      ok: true,
+      tier,
+      profit,
+      maxLoss,
+      balance: user.balance,
+    };
+  });
+}
+
 function createBlackjackDeck() {
   const deck = [];
 
@@ -3520,6 +4045,7 @@ async function handleHelp(interaction) {
         ['/결투', '버튼으로 턴제 전투'],
         ['/동전던지기', '앞면/뒷면 도박'],
         ['/주사위', '1-6 숫자 맞히기'],
+        ['/배치', '롤 배치고사 확률 도박'],
         ['/사정', '초야/세냥/남랭 거리 맞히기'],
         ['/블랙잭', '딜러와 블랙잭'],
       ]),
@@ -3829,9 +4355,13 @@ async function handleInventory(interaction) {
       user,
     };
   });
+  const imageFile = createInventoryCardFile(target, result.user);
+  const embed = createInventoryEmbed(target, result.user)
+    .setImage(`attachment://${imageFile.fileName}`);
 
   await reply(interaction, {
-    embeds: [createInventoryEmbed(target, result.user)],
+    embeds: [embed],
+    files: [imageFile.attachment],
   });
 }
 
@@ -3848,9 +4378,13 @@ async function handleStatus(interaction) {
       user,
     };
   });
+  const imageFile = createStatusCardFile(target, result.user);
+  const embed = createStatusEmbed(target, result.user)
+    .setImage(`attachment://${imageFile.fileName}`);
 
   await reply(interaction, {
-    embeds: [createStatusEmbed(target, result.user)],
+    embeds: [embed],
+    files: [imageFile.attachment],
   });
 }
 
@@ -5842,6 +6376,57 @@ async function handleDice(interaction) {
   });
 }
 
+async function handlePlacementExam(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const wager = interaction.options.getInteger('금액', true);
+  const result = await settlePlacementExam({
+    guildId: interaction.guildId,
+    discordUser: interaction.user,
+    wager,
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const didProfit = result.profit > 0;
+  const tierIcon = result.tier.iconUrl ? null : createPlacementExamTierIconFile(result.tier);
+  const embed = createUiEmbed({
+    color: result.tier.color || (didProfit ? uiTheme.colors.success : uiTheme.colors.danger),
+    title: '롤 배치고사',
+    description: `${interaction.user}님의 배치 결과는 **${result.tier.name}**입니다.`,
+  })
+    .setThumbnail(result.tier.iconUrl || `attachment://${tierIcon.fileName}`)
+    .addFields(
+    { name: '베팅 기준 금액', value: formatCoins(wager), inline: true },
+    { name: '보상', value: formatPlacementExamMultiplier(result.tier), inline: true },
+    { name: '확률', value: formatPlacementExamChance(result.tier), inline: true },
+    { name: '손익', value: formatPlacementExamProfit(result.profit), inline: true },
+    { name: '최대 손실', value: `${formatCoins(result.maxLoss)} (베팅액 x ${placementExamMaxLossMultiplier}배)`, inline: true },
+    { name: '현재 잔액', value: formatCoins(result.balance), inline: true },
+    { name: '주의', value: placementExamWarning, inline: false },
+    { name: '확률표', value: formatPlacementExamOdds(), inline: false },
+  );
+
+  const payload = {
+    content: `${interaction.user}님의 롤 배치고사 결과`,
+    embeds: [embed],
+  };
+
+  if (tierIcon) {
+    payload.files = [tierIcon.attachment];
+  }
+
+  await reply(interaction, payload);
+}
+
 async function handleWaterGun(interaction) {
   if (!(await requireGuild(interaction))) {
     return;
@@ -6337,6 +6922,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case '주사위':
         await handleDice(interaction);
+        break;
+      case '배치':
+        await handlePlacementExam(interaction);
         break;
       case '사정':
         await handleWaterGun(interaction);

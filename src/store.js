@@ -135,7 +135,7 @@ class BaseStore {
     };
 
     const record = guild.users[userId];
-    record.balance = Number.isFinite(record.balance) ? Math.max(0, Math.floor(record.balance)) : 0;
+    record.balance = Number.isFinite(record.balance) ? Math.floor(record.balance) : 0;
     record.stats ||= {};
     record.stats.fishing ||= 0;
     record.stats.fishingFailed ||= 0;

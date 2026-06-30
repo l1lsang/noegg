@@ -341,6 +341,18 @@ function buildCommandData() {
       ),
 
     new SlashCommandBuilder()
+      .setName('배치')
+      .setDescription('롤 배치고사 확률표대로 노코인을 겁니다. 큰 손실이 날 수 있습니다.')
+      .addIntegerOption((option) =>
+        option
+          .setName('금액')
+          .setDescription('베팅 기준 금액입니다. 최대 손실은 베팅액의 5배입니다.')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(100000000),
+      ),
+
+    new SlashCommandBuilder()
       .setName('사정')
       .setDescription('초야, 세냥, 남랭 중 누가 가장 멀리 쌀지 베팅합니다.')
       .addStringOption((option) =>
