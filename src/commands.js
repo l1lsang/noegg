@@ -32,6 +32,10 @@ function buildCommandData() {
       ),
 
     new SlashCommandBuilder()
+      .setName('파산신청')
+      .setDescription('빚을 0으로 정리합니다. 성공 후 30분 쿨타임이 있습니다.'),
+
+    new SlashCommandBuilder()
       .setName('랭킹')
       .setDescription('서버 노코인 게임 랭킹을 확인합니다.')
       .addStringOption((option) =>
@@ -59,8 +63,7 @@ function buildCommandData() {
           .setName('금액')
           .setDescription('복권 구매 금액입니다.')
           .setRequired(true)
-          .setMinValue(100)
-          .setMaxValue(100000000),
+          .setMinValue(100),
       ),
 
     new SlashCommandBuilder()
@@ -143,8 +146,7 @@ function buildCommandData() {
           .setName('금액')
           .setDescription('베팅할 노코인 금액입니다.')
           .setRequired(true)
-          .setMinValue(1)
-          .setMaxValue(100000000),
+          .setMinValue(1),
       ),
 
     new SlashCommandBuilder()
@@ -209,7 +211,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('아이템합성')
-      .setDescription('같은 등급 아이템 4개를 소모해 다음 등급 아이템 1개를 얻습니다.')
+      .setDescription('등급별 레시피와 노코인을 소모해 다음 등급 랜덤 아이템 1개를 얻습니다.')
       .addStringOption((option) =>
         option
           .setName('등급')
@@ -243,6 +245,39 @@ function buildCommandData() {
     new SlashCommandBuilder()
       .setName('상점')
       .setDescription('노코인으로 살 수 있는 아이템 목록을 확인합니다.'),
+
+    new SlashCommandBuilder()
+      .setName('방어구')
+      .setDescription('보유 방어구와 자동 장착 효과를 확인합니다.'),
+
+    new SlashCommandBuilder()
+      .setName('방어구뽑기')
+      .setDescription('노코인으로 방어구를 뽑습니다.')
+      .addIntegerOption((option) =>
+        option
+          .setName('수량')
+          .setDescription('뽑을 수량입니다.')
+          .setRequired(false)
+          .setMinValue(1)
+          .setMaxValue(20),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('방어구합성')
+      .setDescription('방어구 조각과 노코인을 소모해 상위 등급 방어구를 만듭니다.')
+      .addStringOption((option) =>
+        option
+          .setName('목표등급')
+          .setDescription('합성할 목표 방어구 등급입니다.')
+          .setRequired(true)
+          .addChoices(
+            { name: '고급', value: 'uncommon' },
+            { name: '희귀', value: 'rare' },
+            { name: '영웅', value: 'epic' },
+            { name: '전설', value: 'legendary' },
+            { name: '신화', value: 'mythic' },
+          ),
+      ),
 
     new SlashCommandBuilder()
       .setName('아이템구매')
@@ -290,8 +325,7 @@ function buildCommandData() {
           .setName('금액')
           .setDescription('각자 걸 노코인 금액입니다. 생략하면 코인 없이 싸웁니다.')
           .setRequired(false)
-          .setMinValue(0)
-          .setMaxValue(100000000),
+          .setMinValue(0),
       ),
 
     new SlashCommandBuilder()
@@ -316,8 +350,7 @@ function buildCommandData() {
           .setName('금액')
           .setDescription('걸 노코인 금액입니다. 맞히면 2배를 돌려받습니다.')
           .setRequired(true)
-          .setMinValue(1)
-          .setMaxValue(100000000),
+          .setMinValue(1),
       ),
 
     new SlashCommandBuilder()
@@ -336,8 +369,7 @@ function buildCommandData() {
           .setName('금액')
           .setDescription('걸 노코인 금액입니다. 맞히면 6배를 돌려받습니다.')
           .setRequired(true)
-          .setMinValue(1)
-          .setMaxValue(100000000),
+          .setMinValue(1),
       ),
 
     new SlashCommandBuilder()
@@ -348,8 +380,7 @@ function buildCommandData() {
           .setName('금액')
           .setDescription('베팅 기준 금액입니다. 최대 손실은 베팅액의 5배입니다.')
           .setRequired(true)
-          .setMinValue(1)
-          .setMaxValue(100000000),
+          .setMinValue(1),
       ),
 
     new SlashCommandBuilder()
@@ -375,8 +406,7 @@ function buildCommandData() {
           .setName('금액')
           .setDescription('걸 노코인 금액입니다. 맞히면 3배를 돌려받습니다.')
           .setRequired(true)
-          .setMinValue(1)
-          .setMaxValue(100000000),
+          .setMinValue(1),
       ),
 
     new SlashCommandBuilder()
@@ -387,8 +417,7 @@ function buildCommandData() {
           .setName('금액')
           .setDescription('걸 노코인 금액입니다.')
           .setRequired(true)
-          .setMinValue(1)
-          .setMaxValue(100000000),
+          .setMinValue(1),
       ),
 
     new SlashCommandBuilder()

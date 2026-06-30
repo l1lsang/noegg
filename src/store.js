@@ -55,6 +55,7 @@ class BaseStore {
       cooldowns: {
         fishing: {},
         begging: {},
+        bankruptcy: {},
       },
       dailyActions: {
         begging: {},
@@ -70,6 +71,7 @@ class BaseStore {
     guild.cooldowns ||= {};
     guild.cooldowns.fishing ||= {};
     guild.cooldowns.begging ||= {};
+    guild.cooldowns.bankruptcy ||= {};
     guild.dailyActions ||= {};
     guild.dailyActions.begging ||= {};
     guild.dailyActions.attendance ||= {};
@@ -110,16 +112,25 @@ class BaseStore {
         itemShopSpent: 0,
         itemRepairCount: 0,
         itemRepairSpent: 0,
+        itemSynthesisCount: 0,
+        itemSynthesisSpent: 0,
+        armorDraws: 0,
+        armorDrawSpent: 0,
+        armorSynthesisCount: 0,
+        armorSynthesisSpent: 0,
         protectionTicketsFound: 0,
         protectionTicketsUsed: 0,
         lotteryPlayed: 0,
         lotteryWon: 0,
         lotterySpent: 0,
         lotteryPayout: 0,
+        bankruptcyCount: 0,
+        bankruptcyDebtCleared: 0,
         grantsReceived: 0,
       },
       inventory: {},
       evolutions: {},
+      armors: {},
       attendance: {
         lastDate: null,
         streak: 0,
@@ -166,15 +177,24 @@ class BaseStore {
     record.stats.itemShopSpent ||= 0;
     record.stats.itemRepairCount ||= 0;
     record.stats.itemRepairSpent ||= 0;
+    record.stats.itemSynthesisCount ||= 0;
+    record.stats.itemSynthesisSpent ||= 0;
+    record.stats.armorDraws ||= 0;
+    record.stats.armorDrawSpent ||= 0;
+    record.stats.armorSynthesisCount ||= 0;
+    record.stats.armorSynthesisSpent ||= 0;
     record.stats.protectionTicketsFound ||= 0;
     record.stats.protectionTicketsUsed ||= 0;
     record.stats.lotteryPlayed ||= 0;
     record.stats.lotteryWon ||= 0;
     record.stats.lotterySpent ||= 0;
     record.stats.lotteryPayout ||= 0;
+    record.stats.bankruptcyCount ||= 0;
+    record.stats.bankruptcyDebtCleared ||= 0;
     record.stats.grantsReceived ||= 0;
     record.inventory = record.inventory && typeof record.inventory === 'object' ? record.inventory : {};
     record.evolutions = record.evolutions && typeof record.evolutions === 'object' ? record.evolutions : {};
+    record.armors = record.armors && typeof record.armors === 'object' ? record.armors : {};
     record.attendance = record.attendance && typeof record.attendance === 'object'
       ? record.attendance
       : {};
