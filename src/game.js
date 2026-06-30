@@ -98,6 +98,8 @@ const ITEM_GRADE_CONFIGS = {
     baseCost: 8000,
     costGrowth: 0.22,
     statGain: 1,
+    chanceMultiplier: 1,
+    destroyMultiplier: 0.85,
     maxDurability: 70,
   },
   uncommon: {
@@ -108,6 +110,8 @@ const ITEM_GRADE_CONFIGS = {
     baseCost: 15000,
     costGrowth: 0.28,
     statGain: 2,
+    chanceMultiplier: 0.96,
+    destroyMultiplier: 0.95,
     maxDurability: 85,
   },
   rare: {
@@ -118,6 +122,8 @@ const ITEM_GRADE_CONFIGS = {
     baseCost: 30000,
     costGrowth: 0.35,
     statGain: 3,
+    chanceMultiplier: 0.92,
+    destroyMultiplier: 1,
     maxDurability: 100,
   },
   epic: {
@@ -128,6 +134,8 @@ const ITEM_GRADE_CONFIGS = {
     baseCost: 60000,
     costGrowth: 0.45,
     statGain: 5,
+    chanceMultiplier: 0.88,
+    destroyMultiplier: 1.08,
     maxDurability: 120,
   },
   legendary: {
@@ -138,6 +146,8 @@ const ITEM_GRADE_CONFIGS = {
     baseCost: 120000,
     costGrowth: 0.58,
     statGain: 8,
+    chanceMultiplier: 0.84,
+    destroyMultiplier: 1.18,
     maxDurability: 145,
   },
   mythic: {
@@ -148,6 +158,8 @@ const ITEM_GRADE_CONFIGS = {
     baseCost: 250000,
     costGrowth: 0.75,
     statGain: 12,
+    chanceMultiplier: 0.8,
+    destroyMultiplier: 1.3,
     maxDurability: 180,
   },
 };
@@ -165,7 +177,31 @@ const ENHANCEMENT_LEVEL_CHANCES = [
   0.08,
   0.05,
 ];
+const ENHANCEMENT_DESTROY_CHANCES = [
+  0,
+  0,
+  0,
+  0,
+  0,
+  0.08,
+  0.12,
+  0.17,
+  0.23,
+  0.3,
+  0.38,
+  0.46,
+];
 const PROTECTION_TICKET_CHANCE = 0.001;
+const FISHING_FAILURE_CHANCE = 0.25;
+const FISHING_ITEM_ROLL_CHANCE = Math.max(0, 1 - FISHING_FAILURE_CHANCE - PROTECTION_TICKET_CHANCE);
+const ITEM_USE_CHANCES = {
+  common: 0.92,
+  uncommon: 0.84,
+  rare: 0.74,
+  epic: 0.62,
+  legendary: 0.5,
+  mythic: 0.38,
+};
 
 function getItemGradeConfig(gradeKey = 'common') {
   return ITEM_GRADE_CONFIGS[gradeKey] || ITEM_GRADE_CONFIGS.common;
@@ -174,16 +210,53 @@ function getItemGradeConfig(gradeKey = 'common') {
 function getItemEnhancementCost(gradeKey, enhanceLevel = 0) {
   const grade = getItemGradeConfig(gradeKey);
   const level = Math.max(0, Math.floor(enhanceLevel));
-  return Math.floor(grade.baseCost * (1 + grade.costGrowth * level));
+  return Math.floor(grade.baseCost * (1 + grade.costGrowth * level + 0.06 * level * level));
+}
+
+function getItemEnhancementRates(gradeKey, enhanceLevel = 0) {
+  const grade = getItemGradeConfig(gradeKey);
+  const level = Math.max(0, Math.floor(enhanceLevel));
+  const baseSuccessChance = ENHANCEMENT_LEVEL_CHANCES[Math.min(level, ENHANCEMENT_LEVEL_CHANCES.length - 1)];
+  const baseDestroyChance = ENHANCEMENT_DESTROY_CHANCES[Math.min(level, ENHANCEMENT_DESTROY_CHANCES.length - 1)];
+  const successChance = Math.max(0.01, Math.min(0.98, baseSuccessChance * (grade.chanceMultiplier || 1)));
+  const destructionChance = level < 5
+    ? 0
+    : Math.max(0, Math.min(0.9 - successChance, baseDestroyChance * (grade.destroyMultiplier || 1)));
+  const failureChance = Math.max(0, 1 - successChance - destructionChance);
+
+  return {
+    successChance,
+    failureChance,
+    destructionChance,
+  };
 }
 
 function getItemEnhancementChance(gradeKey, enhanceLevel = 0) {
-  const level = Math.max(0, Math.floor(enhanceLevel));
-  return ENHANCEMENT_LEVEL_CHANCES[Math.min(level, ENHANCEMENT_LEVEL_CHANCES.length - 1)];
+  return getItemEnhancementRates(gradeKey, enhanceLevel).successChance;
 }
 
 function rollItemEnhancement(gradeKey, enhanceLevel = 0) {
-  const chance = getItemEnhancementChance(gradeKey, enhanceLevel);
+  const rates = getItemEnhancementRates(gradeKey, enhanceLevel);
+  const roll = Math.random();
+  const success = roll < rates.successChance;
+  const destroyed = !success && roll < rates.successChance + rates.destructionChance;
+
+  return {
+    ...rates,
+    chance: rates.successChance,
+    success,
+    destroyed,
+    failed: !success,
+  };
+}
+
+function getItemUseChance(gradeKey = 'common') {
+  const grade = getItemGradeConfig(gradeKey);
+  return ITEM_USE_CHANCES[grade.key] || ITEM_USE_CHANCES.common;
+}
+
+function rollItemUse(gradeKey = 'common') {
+  const chance = getItemUseChance(gradeKey);
   return {
     chance,
     success: Math.random() < chance,
@@ -246,7 +319,7 @@ const ITEM_EVOLUTION_DEFINITIONS = [
     stance: '끊임없는 송금 알림으로 상대 집중력을 흐트러뜨립니다.',
     attack: '1원 알림 폭격',
     motion: '연속 송금 알림으로 상대의 리듬을 끊어냅니다.',
-    ultimate: '잔액 역전 청구',
+    ultimate: '빚 탕감',
     ultimateMotion: '사채업자를 소환해서 공격하게 한다.',
     statBias: { attack: 1, defense: 0, luck: 4 },
   },
@@ -290,8 +363,8 @@ const ITEM_EVOLUTION_DEFINITIONS = [
     stance: '칼날 끝에서 선명한 피가 맺힌다',
     attack: '검술',
     motion: '짧은 보폭으로 파고들어 빛나는 칼날을 사선으로 긋습니다.',
-    ultimate: '라마화',
-    ultimateMotion: '생식기를 절단하여 상대가 번식을 못하게 한다',
+    ultimate: '마약 OD',
+    ultimateMotion: '비타500에 물뽕을 타서 먹인다',
     statBias: { attack: 3, defense: 1, luck: 0 },
   },
   {
@@ -333,9 +406,9 @@ const ITEM_EVOLUTION_DEFINITIONS = [
     evolution: '유전자 조작자',
     stance: '존재하지 않는 것을 가진 자.',
     attack: '콩알탄',
-    motion: '복제된 잔상을 흩뿌리며 상대에게 공포를 안깁니다.',
+    motion: '복제된 부랄을 흩뿌리며 상대에게 공포를 안깁니다.',
     ultimate: '중성화',
-    ultimateMotion: '상대의 중심을 무너뜨린 뒤 강한 발차기로 전장을 뒤흔듭니다.',
+    ultimateMotion: '상대의 부랄을 손으로 으깬 뒤 강한 발차기로 중성화를 마무리합니다.',
     statBias: { attack: 4, defense: 2, luck: 1 },
   },
 ];
@@ -352,7 +425,21 @@ const BEGGING_TABLE = [
 ];
 
 function fishReward(multiplier = 1) {
-  if (Math.random() < PROTECTION_TICKET_CHANCE) {
+  const eventRoll = Math.random();
+
+  if (eventRoll < FISHING_FAILURE_CHANCE) {
+    return {
+      label: '빈 낚싯바늘',
+      amount: 0,
+      baseAmount: 0,
+      weight: 0,
+      type: 'failure',
+      failed: true,
+      chance: FISHING_FAILURE_CHANCE,
+    };
+  }
+
+  if (eventRoll < FISHING_FAILURE_CHANCE + PROTECTION_TICKET_CHANCE) {
     return {
       label: '강화 방지권',
       amount: 0,
@@ -414,7 +501,7 @@ function listFishingItems(multiplier = 1) {
       averageAmount: scaleAmount(averageBaseAmount, multiplier),
       averageBaseAmount,
       weight: item.weight,
-      chance: (1 - PROTECTION_TICKET_CHANCE) * (item.weight / totalWeight),
+      chance: FISHING_ITEM_ROLL_CHANCE * (item.weight / totalWeight),
       itemPoolChance: item.weight / totalWeight,
       grade,
       evolution,
@@ -441,13 +528,17 @@ function listItemGradeDropRates() {
 
   return Array.from(grouped.values()).map((entry) => ({
     ...entry,
-    chance: (1 - PROTECTION_TICKET_CHANCE) * (entry.weight / totalWeight),
+    chance: FISHING_ITEM_ROLL_CHANCE * (entry.weight / totalWeight),
     itemPoolChance: entry.weight / totalWeight,
   }));
 }
 
 function getFishingProtectionTicketChance() {
   return PROTECTION_TICKET_CHANCE;
+}
+
+function getFishingFailureChance() {
+  return FISHING_FAILURE_CHANCE;
 }
 
 function listItemEvolutions() {
@@ -462,9 +553,12 @@ module.exports = {
   formatRemaining,
   getItemEnhancementChance,
   getItemEnhancementCost,
+  getItemEnhancementRates,
   getItemEvolution,
   getItemGradeConfig,
+  getItemUseChance,
   getFishingProtectionTicketChance,
+  getFishingFailureChance,
   listFishingItems,
   listItemGradeDropRates,
   listItemEvolutions,
@@ -474,5 +568,6 @@ module.exports = {
   parseOptions,
   randomInt,
   rollItemEnhancement,
+  rollItemUse,
   totalBetPool,
 };

@@ -58,6 +58,7 @@ class BaseStore {
       },
       dailyActions: {
         begging: {},
+        attendance: {},
       },
     };
 
@@ -71,6 +72,7 @@ class BaseStore {
     guild.cooldowns.begging ||= {};
     guild.dailyActions ||= {};
     guild.dailyActions.begging ||= {};
+    guild.dailyActions.attendance ||= {};
     return guild;
   }
 
@@ -80,7 +82,10 @@ class BaseStore {
       balance: this.startingBalance,
       stats: {
         fishing: 0,
+        fishingFailed: 0,
         begging: 0,
+        attendanceCount: 0,
+        attendanceReward: 0,
         betsWon: 0,
         betsLost: 0,
         gamblingWon: 0,
@@ -94,8 +99,12 @@ class BaseStore {
         battlesLost: 0,
         battleProfit: 0,
         itemsUsed: 0,
+        itemUseSuccesses: 0,
+        itemUseFailures: 0,
         itemEnhanceAttempts: 0,
         itemEnhanceSuccesses: 0,
+        itemEnhanceFailures: 0,
+        itemEnhanceDestroyed: 0,
         itemEnhanceSpent: 0,
         itemShopPurchases: 0,
         itemShopSpent: 0,
@@ -103,10 +112,19 @@ class BaseStore {
         itemRepairSpent: 0,
         protectionTicketsFound: 0,
         protectionTicketsUsed: 0,
+        lotteryPlayed: 0,
+        lotteryWon: 0,
+        lotterySpent: 0,
+        lotteryPayout: 0,
         grantsReceived: 0,
       },
       inventory: {},
       evolutions: {},
+      attendance: {
+        lastDate: null,
+        streak: 0,
+        bestStreak: 0,
+      },
       protectionTickets: 0,
       power: {
         attack: 1,
@@ -120,7 +138,10 @@ class BaseStore {
     record.balance = Number.isFinite(record.balance) ? Math.max(0, Math.floor(record.balance)) : 0;
     record.stats ||= {};
     record.stats.fishing ||= 0;
+    record.stats.fishingFailed ||= 0;
     record.stats.begging ||= 0;
+    record.stats.attendanceCount ||= 0;
+    record.stats.attendanceReward ||= 0;
     record.stats.betsWon ||= 0;
     record.stats.betsLost ||= 0;
     record.stats.gamblingWon ||= 0;
@@ -134,8 +155,12 @@ class BaseStore {
     record.stats.battlesLost ||= 0;
     record.stats.battleProfit ||= 0;
     record.stats.itemsUsed ||= 0;
+    record.stats.itemUseSuccesses ||= 0;
+    record.stats.itemUseFailures ||= 0;
     record.stats.itemEnhanceAttempts ||= 0;
     record.stats.itemEnhanceSuccesses ||= 0;
+    record.stats.itemEnhanceFailures ||= 0;
+    record.stats.itemEnhanceDestroyed ||= 0;
     record.stats.itemEnhanceSpent ||= 0;
     record.stats.itemShopPurchases ||= 0;
     record.stats.itemShopSpent ||= 0;
@@ -143,9 +168,19 @@ class BaseStore {
     record.stats.itemRepairSpent ||= 0;
     record.stats.protectionTicketsFound ||= 0;
     record.stats.protectionTicketsUsed ||= 0;
+    record.stats.lotteryPlayed ||= 0;
+    record.stats.lotteryWon ||= 0;
+    record.stats.lotterySpent ||= 0;
+    record.stats.lotteryPayout ||= 0;
     record.stats.grantsReceived ||= 0;
     record.inventory = record.inventory && typeof record.inventory === 'object' ? record.inventory : {};
     record.evolutions = record.evolutions && typeof record.evolutions === 'object' ? record.evolutions : {};
+    record.attendance = record.attendance && typeof record.attendance === 'object'
+      ? record.attendance
+      : {};
+    record.attendance.lastDate = typeof record.attendance.lastDate === 'string' ? record.attendance.lastDate : null;
+    record.attendance.streak = Number.isFinite(record.attendance.streak) ? Math.max(0, Math.floor(record.attendance.streak)) : 0;
+    record.attendance.bestStreak = Number.isFinite(record.attendance.bestStreak) ? Math.max(0, Math.floor(record.attendance.bestStreak)) : 0;
     record.protectionTickets = Number.isFinite(record.protectionTickets) ? Math.max(0, Math.floor(record.protectionTickets)) : 0;
     record.power = record.power && typeof record.power === 'object' ? record.power : {};
     record.power.attack = Number.isFinite(record.power.attack) ? Math.max(1, Math.floor(record.power.attack)) : 1;

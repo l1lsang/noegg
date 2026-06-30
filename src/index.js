@@ -33,10 +33,12 @@ const {
   fishReward,
   formatCoins,
   formatRemaining,
-  getItemEnhancementChance,
   getItemEnhancementCost,
+  getItemEnhancementRates,
   getItemEvolution,
   getItemGradeConfig,
+  getItemUseChance,
+  getFishingFailureChance,
   getFishingProtectionTicketChance,
   listFishingItems,
   listItemGradeDropRates,
@@ -46,6 +48,7 @@ const {
   parseOptions,
   randomInt,
   rollItemEnhancement,
+  rollItemUse,
   totalBetPool,
 } = require('./game');
 
@@ -54,6 +57,23 @@ const ownerIds = new Set(config.ownerIds);
 const economyMultiplier = Math.max(1, Math.floor(config.economyMultiplier || 1));
 const quickBetAmounts = [100, 500, 1000].map((amount) => amount * economyMultiplier);
 const koreaTimeZone = 'Asia/Seoul';
+const waterGunContestants = [
+  {
+    key: 'choya',
+    label: '초야',
+    motion: '낮게 깔린 물줄기로 안정적인 직선을 만들었습니다.',
+  },
+  {
+    key: 'senyang',
+    label: '세냥',
+    motion: '순간적으로 힘을 몰아넣어 물줄기를 길게 뽑았습니다.',
+  },
+  {
+    key: 'namraeng',
+    label: '남랭',
+    motion: '각도를 높게 잡고 끝까지 압력을 버텼습니다.',
+  },
+];
 const blackjackSuits = ['♠', '♥', '♦', '♣'];
 const blackjackRanks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 const battleChallenges = new Map();
@@ -61,6 +81,8 @@ const battleChallengeTtlMs = 5 * 60 * 1000;
 const battleSessions = new Map();
 const battleSessionTtlMs = 20 * 60 * 1000;
 const battleMaxTurns = 12;
+const pendingItemEnhancements = new Map();
+const itemEnhancementTtlMs = 5 * 60 * 1000;
 const shopGradePriceMultipliers = {
   common: 12,
   uncommon: 18,
@@ -378,6 +400,144 @@ function formatDurabilityLine(current, max, size = 10) {
 
 function formatCommandList(commands) {
   return commands.map(([name, text]) => `\`${name}\` ${text}`).join('\n');
+}
+
+function getKoreaDateKey(timestamp = Date.now()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: koreaTimeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(timestamp));
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function getPreviousDateKey(dateKey) {
+  const [year, month, day] = String(dateKey || '').split('-').map((part) => Number.parseInt(part, 10));
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return null;
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() - 1);
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+function getAttendanceReward(streak) {
+  const streakBonus = Math.min(30, Math.max(1, Math.floor(streak))) * 150;
+  return Math.floor((1000 + streakBonus) * economyMultiplier);
+}
+
+function drawLottery(wager) {
+  const roll = Math.random();
+  const tiers = [
+    { threshold: 0.01, label: '대박', multiplier: 20, color: uiTheme.colors.success },
+    { threshold: 0.06, label: '큰 당첨', multiplier: 5, color: uiTheme.colors.success },
+    { threshold: 0.22, label: '당첨', multiplier: 2, color: uiTheme.colors.economy },
+    { threshold: 0.42, label: '본전', multiplier: 1, color: uiTheme.colors.warning },
+  ];
+  const tier = tiers.find((entry) => roll < entry.threshold) || {
+    label: '꽝',
+    multiplier: 0,
+    color: uiTheme.colors.danger,
+  };
+  const payout = Math.floor(wager * tier.multiplier);
+
+  return {
+    ...tier,
+    payout,
+    profit: payout - wager,
+  };
+}
+
+function getRankingMetric(user, metric) {
+  if (metric === 'power') {
+    const bestWeapon = getBestBattleWeapon(user);
+    return bestWeapon ? Math.floor(getPowerScore(bestWeapon.power)) : Math.floor(getPowerScore(getUserPower(user)));
+  }
+
+  if (metric === 'enhance') {
+    return getUserEvolutions(user).reduce((sum, evolution) => sum + evolution.enhanceLevel, 0);
+  }
+
+  if (metric === 'fishing') {
+    return user.stats?.fishing || 0;
+  }
+
+  return user.balance || 0;
+}
+
+function getRankingLabel(metric) {
+  return {
+    balance: '잔액',
+    power: '전투력',
+    enhance: '강화',
+    fishing: '낚시',
+  }[metric] || '잔액';
+}
+
+function formatRankingValue(metric, value) {
+  if (metric === 'balance') {
+    return formatCoins(value);
+  }
+
+  if (metric === 'enhance') {
+    return `총 +${value}`;
+  }
+
+  if (metric === 'fishing') {
+    return `${value}회`;
+  }
+
+  return `${value}점`;
+}
+
+function getWaterGunContestant(key) {
+  return waterGunContestants.find((contestant) => contestant.key === key) || null;
+}
+
+function formatWaterGunDistance(cm) {
+  return `${(cm / 100).toFixed(2)}m`;
+}
+
+function simulateWaterGunContest() {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const shots = waterGunContestants
+      .map((contestant, index) => ({
+        ...contestant,
+        order: index + 1,
+        distance: randomInt(650, 1850),
+      }));
+    const results = shots.slice().sort((a, b) => b.distance - a.distance);
+    const winners = results.filter((result) => result.distance === results[0].distance);
+
+    if (winners.length === 1) {
+      return {
+        shots,
+        results,
+        winner: results[0],
+      };
+    }
+  }
+
+  const shots = waterGunContestants
+    .map((contestant, index) => ({
+      ...contestant,
+      order: index + 1,
+      distance: randomInt(650, 1850) + randomInt(0, 99) / 100,
+    }));
+  const results = shots.slice().sort((a, b) => b.distance - a.distance);
+
+  return {
+    shots,
+    results,
+    winner: results[0],
+  };
 }
 
 function getDisplayName(target, user = {}) {
@@ -739,6 +899,22 @@ function parseBattleCustomId(customId) {
   };
 }
 
+function itemEnhanceCustomId(action, requestId) {
+  return ['itemEnhance', action, requestId].join(':');
+}
+
+function parseItemEnhanceCustomId(customId) {
+  const parts = String(customId || '').split(':');
+  if (parts[0] !== 'itemEnhance') {
+    return null;
+  }
+
+  return {
+    action: parts[1],
+    requestId: parts[2],
+  };
+}
+
 function wait(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -747,6 +923,24 @@ function wait(ms) {
 
 function createBattleChallengeId() {
   return randomUUID().replaceAll('-', '').slice(0, 16);
+}
+
+function createItemEnhancementRequestId() {
+  return randomUUID().replaceAll('-', '').slice(0, 16);
+}
+
+function getPendingItemEnhancement(requestId, guildId) {
+  const request = pendingItemEnhancements.get(requestId);
+  if (!request || request.guildId !== guildId) {
+    return null;
+  }
+
+  if (Date.now() - request.createdAt > itemEnhancementTtlMs) {
+    pendingItemEnhancements.delete(requestId);
+    return null;
+  }
+
+  return request;
 }
 
 function getBattleChallenge(challengeId, guildId) {
@@ -803,6 +997,14 @@ function formatChance(chance) {
   return `${Math.round(chance * 1000) / 10}%`;
 }
 
+function formatEnhancementRates(rates) {
+  return [
+    `성공 ${formatChance(rates.successChance)}`,
+    `실패 ${formatChance(rates.failureChance)}`,
+    `파괴 ${formatChance(rates.destructionChance)}`,
+  ].join(' / ');
+}
+
 function getUserEvolutions(user) {
   const evolutions = user.evolutions && typeof user.evolutions === 'object' ? user.evolutions : {};
   return Object.entries(evolutions)
@@ -820,12 +1022,21 @@ function getUserEvolutions(user) {
       const enhanceLevel = Number.isFinite(record.enhanceLevel)
         ? Math.max(0, Math.floor(record.enhanceLevel))
         : 0;
+      const rawEnhancePowerBonus = record.enhancePowerBonus && typeof record.enhancePowerBonus === 'object'
+        ? record.enhancePowerBonus
+        : {};
+      const enhancePowerBonus = {
+        attack: Number.isFinite(rawEnhancePowerBonus.attack) ? Math.max(0, Math.floor(rawEnhancePowerBonus.attack)) : 0,
+        defense: Number.isFinite(rawEnhancePowerBonus.defense) ? Math.max(0, Math.floor(rawEnhancePowerBonus.defense)) : 0,
+        luck: Number.isFinite(rawEnhancePowerBonus.luck) ? Math.max(0, Math.floor(rawEnhancePowerBonus.luck)) : 0,
+      };
       return {
         key,
         itemName,
         name: record.name || definition.evolution,
         level: Number.isFinite(record.level) ? Math.max(1, Math.floor(record.level)) : 1,
         enhanceLevel,
+        enhancePowerBonus,
         used: Number.isFinite(record.used) ? Math.max(1, Math.floor(record.used)) : 1,
         lastUsedAt: record.lastUsedAt || null,
         grade,
@@ -856,6 +1067,9 @@ function getWeaponBattlePower(evolution) {
   const bias = getEvolutionStatBias(evolution.definition);
   const level = Math.max(1, Math.floor(evolution.level || 1));
   const enhanceLevel = Math.max(0, Math.floor(evolution.enhanceLevel || 0));
+  const enhancePowerBonus = evolution.enhancePowerBonus && typeof evolution.enhancePowerBonus === 'object'
+    ? evolution.enhancePowerBonus
+    : {};
   const durabilityRatio = Math.max(0.35, Math.min(1, evolution.durability / Math.max(1, evolution.maxDurability)));
 
   return {
@@ -864,18 +1078,21 @@ function getWeaponBattlePower(evolution) {
       + Math.max(0, bias.attack) * profile.biasScale
       + level * profile.levelScale
       + enhanceLevel * profile.enhanceScale
+      + Math.max(0, Math.floor(enhancePowerBonus.attack || 0))
     ) * durabilityRatio)),
     defense: Math.max(1, Math.floor((
       profile.base.defense
       + Math.max(0, bias.defense) * profile.biasScale
       + level * profile.levelScale
       + enhanceLevel * profile.enhanceScale
+      + Math.max(0, Math.floor(enhancePowerBonus.defense || 0))
     ) * durabilityRatio)),
     luck: Math.max(1, Math.floor((
       profile.base.luck
       + Math.max(0, bias.luck) * Math.max(2, Math.floor(profile.biasScale * 0.7))
       + level * Math.max(1, Math.floor(profile.levelScale * 0.7))
       + enhanceLevel * Math.max(1, Math.floor(profile.enhanceScale * 0.65))
+      + Math.max(0, Math.floor(enhancePowerBonus.luck || 0))
     ) * durabilityRatio)),
   };
 }
@@ -927,8 +1144,8 @@ function formatEvolutionSummary(user, maxItems = 4) {
     .map((evolution) => {
       const enhanceText = evolution.enhanceLevel > 0 ? ` +${evolution.enhanceLevel}` : '';
       const nextCost = getItemEnhancementCost(evolution.grade.key, evolution.enhanceLevel);
-      const nextChance = getItemEnhancementChance(evolution.grade.key, evolution.enhanceLevel);
-      return `${formatItemGradeLabel(evolution.grade)} ${evolution.name} Lv.${evolution.level}${enhanceText} (${evolution.itemName}) · 내구도 ${evolution.durability}/${evolution.maxDurability} · 다음 ${formatCoins(nextCost)} / ${formatChance(nextChance)}`;
+      const nextRates = getItemEnhancementRates(evolution.grade.key, evolution.enhanceLevel);
+      return `${formatItemGradeLabel(evolution.grade)} ${evolution.name} Lv.${evolution.level}${enhanceText} (${evolution.itemName}) · 내구도 ${evolution.durability}/${evolution.maxDurability} · 다음 ${formatCoins(nextCost)} / ${formatEnhancementRates(nextRates)}`;
     })
     .join('\n');
 }
@@ -1542,7 +1759,7 @@ function createInventoryEmbed(target, user) {
     ? items.slice(0, 12).map((item, index) => {
       const grade = getItemGradeConfig(getItemEvolution(item.name).grade);
       const valueText = item.bestValue > 0 ? `최고 ${formatCoins(item.bestValue)}` : '가치 미기록';
-      return `${index + 1}. ${formatItemGradeLabel(grade)} ${item.name} x${item.count} · ${valueText}`;
+      return `${index + 1}. ${formatItemGradeLabel(grade)} ${item.name} x${item.count} · ${valueText} · 사용 ${formatChance(getItemUseChance(grade.key))}`;
     }).join('\n')
     : '아직 보관함이 비어 있습니다. `/낚시`로 첫 아이템을 잡아보세요.';
 
@@ -1605,12 +1822,12 @@ function createStatusEmbed(target, user) {
     ? evolutions.slice(0, 8).map((evolution, index) => {
       const enhanceText = evolution.enhanceLevel > 0 ? `+${evolution.enhanceLevel}` : '+0';
       const nextCost = getItemEnhancementCost(evolution.grade.key, evolution.enhanceLevel);
-      const nextChance = getItemEnhancementChance(evolution.grade.key, evolution.enhanceLevel);
+      const nextRates = getItemEnhancementRates(evolution.grade.key, evolution.enhanceLevel);
       const usable = evolution.durability > 0 ? '사용 가능' : '파손';
       const weaponPower = evolution.durability > 0 ? getWeaponBattlePower(evolution) : null;
       return [
         `${index + 1}. ${formatItemGradeLabel(evolution.grade)} ${evolution.itemName} ${enhanceText} (${usable})`,
-        `${formatDurabilityLine(evolution.durability, evolution.maxDurability)} · ${weaponPower ? formatStatLine(weaponPower) : '전투 불가'} · 다음 강화 ${formatChance(nextChance)} / ${formatCoins(nextCost)}`,
+        `${formatDurabilityLine(evolution.durability, evolution.maxDurability)} · ${weaponPower ? formatStatLine(weaponPower) : '전투 불가'} · 다음 강화 ${formatEnhancementRates(nextRates)} / ${formatCoins(nextCost)}`,
       ].join('\n');
     }).join('\n\n')
     : '해금된 진화 아이템이 없습니다. `/아이템사용`으로 먼저 해금해 주세요.';
@@ -1653,11 +1870,15 @@ function createStatusEmbed(target, user) {
 function createItemRatesEmbed() {
   const gradeRates = listItemGradeDropRates();
   const protectionChance = getFishingProtectionTicketChance();
+  const failureChance = getFishingFailureChance();
   const gradeLines = gradeRates
     .map((rate) => [
       `${formatItemGradeLabel(rate.grade)} ${formatChance(rate.chance)}`,
       `아이템 풀 기준 ${formatChance(rate.itemPoolChance)} · ${rate.itemCount}종`,
     ].join(' · '))
+    .join('\n');
+  const useLines = gradeRates
+    .map((rate) => `${formatItemGradeLabel(rate.grade)} ${formatChance(getItemUseChance(rate.grade.key))}`)
     .join('\n');
 
   return createUiEmbed({
@@ -1667,7 +1888,9 @@ function createItemRatesEmbed() {
   })
     .addFields(
       { name: '등급별 확률', value: gradeLines || '확률 정보가 없습니다.', inline: false },
-      { name: '특수 획득', value: `강화 방지권 ${formatChance(protectionChance)}`, inline: false },
+      { name: '아이템 사용 성공률', value: useLines || '확률 정보가 없습니다.', inline: false },
+      { name: '특수 획득', value: `강화 방지권 ${formatChance(protectionChance)}`, inline: true },
+      { name: '실패', value: `빈손 ${formatChance(failureChance)}`, inline: true },
     );
 }
 
@@ -1732,28 +1955,57 @@ function createItemRepairEmbed({ user, evolution, cost, balance, previousDurabil
     );
 }
 
-function createItemUseEmbed(user, item, gain, weaponPower, remaining, evolutionRecord, usedCount = 1) {
-  const grade = getItemGradeConfig(evolutionRecord.grade);
+function createItemUseEmbed({
+  user,
+  item,
+  gain,
+  weaponPower,
+  remaining,
+  evolutionRecord,
+  usedCount = 1,
+  successCount = 0,
+  failedCount = 0,
+  useChance,
+}) {
+  const evolution = gain?.evolution || getItemEvolution(item.name);
+  const grade = getItemGradeConfig(evolutionRecord?.grade || evolution.grade);
+  const success = successCount > 0 && evolutionRecord;
+  const usedLabel = usedCount > 1 ? `${usedCount}개를 사용해` : '1개를 사용해';
+  const embed = createUiEmbed({
+    color: success ? getItemGradeColor(grade, uiTheme.colors.success) : uiTheme.colors.danger,
+    title: success ? '아이템 진화 성공' : '아이템 사용 실패',
+    description: success
+      ? `${user}님이 **${formatItemGradeLabel(grade)} ${item.name}** ${usedLabel} **${evolutionRecord.name} Lv.${evolutionRecord.level}**로 진화했습니다.`
+      : `${user}님이 **${formatItemGradeLabel(grade)} ${item.name}** ${usedLabel}했지만 진화에 실패했습니다.`,
+  }).addFields(
+    { name: '사용 결과', value: `성공 ${successCount}개 / 실패 ${failedCount}개`, inline: true },
+    { name: '사용 확률', value: formatChance(useChance), inline: true },
+    { name: '남은 아이템', value: `${remaining}개`, inline: true },
+  );
+
+  if (!success) {
+    embed.addFields({
+      name: '처리',
+      value: '사용한 아이템은 소모됐고 진화 레벨은 오르지 않았습니다.',
+      inline: false,
+    });
+    return embed;
+  }
+
   const enhanceLevel = Number.isFinite(evolutionRecord.enhanceLevel)
     ? Math.max(0, Math.floor(evolutionRecord.enhanceLevel))
     : 0;
   const nextCost = getItemEnhancementCost(grade.key, enhanceLevel);
-  const nextChance = getItemEnhancementChance(grade.key, enhanceLevel);
-  const usedLabel = usedCount > 1 ? `${usedCount}개를 전부 사용해` : '1개를 사용해';
+  const nextRates = getItemEnhancementRates(grade.key, enhanceLevel);
 
-  return createUiEmbed({
-    color: getItemGradeColor(grade, uiTheme.colors.success),
-    title: '아이템 진화 성공',
-    description: `${user}님이 **${formatItemGradeLabel(grade)} ${item.name}** ${usedLabel} **${evolutionRecord.name} Lv.${evolutionRecord.level}**로 진화했습니다.`,
-  })
-    .addFields(
-      { name: '무기 성장', value: `레벨 +${usedCount} / 현재 Lv.${evolutionRecord.level}`, inline: false },
-      { name: '전투 능력', value: formatStatLine(weaponPower), inline: false },
-      { name: '전투 기술', value: `${gain.evolution.attack}\n궁극기: ${gain.evolution.ultimate}`, inline: false },
-      { name: '다음 강화', value: `${formatCoins(nextCost)} / 성공률 ${formatChance(nextChance)}`, inline: true },
-      { name: '사용 개수', value: `${usedCount}개`, inline: true },
-      { name: '남은 아이템', value: `${remaining}개`, inline: true },
-    );
+  embed.addFields(
+    { name: '무기 성장', value: `레벨 +${successCount} / 현재 Lv.${evolutionRecord.level}`, inline: false },
+    { name: '전투 능력', value: formatStatLine(weaponPower), inline: false },
+    { name: '전투 기술', value: `${evolution.attack}\n궁극기: ${evolution.ultimate}`, inline: false },
+    { name: '다음 강화', value: `${formatCoins(nextCost)} / ${formatEnhancementRates(nextRates)}`, inline: false },
+  );
+
+  return embed;
 }
 
 function createItemEnhanceEmbed({
@@ -1761,6 +2013,7 @@ function createItemEnhanceEmbed({
   evolution,
   success,
   chance,
+  rates,
   cost,
   previousLevel,
   nextLevel,
@@ -1772,23 +2025,40 @@ function createItemEnhanceEmbed({
   balance,
 }) {
   const grade = evolution.grade || getItemGradeConfig(evolution.definition.grade);
-  const color = success ? getItemGradeColor(grade, uiTheme.colors.success) : protectedByTicket ? uiTheme.colors.warning : uiTheme.colors.danger;
+  const displayRates = rates || {
+    successChance: chance,
+    failureChance: destroyed ? 0 : Math.max(0, 1 - chance),
+    destructionChance: destroyed ? Math.max(0, 1 - chance) : 0,
+  };
+  const color = success
+    ? getItemGradeColor(grade, uiTheme.colors.success)
+    : destroyed
+      ? uiTheme.colors.danger
+      : uiTheme.colors.warning;
   const currentLevel = destroyed ? 0 : nextLevel;
   const nextCost = destroyed ? null : getItemEnhancementCost(grade.key, currentLevel);
-  const nextChance = destroyed ? null : getItemEnhancementChance(grade.key, currentLevel);
+  const nextRates = destroyed ? null : getItemEnhancementRates(grade.key, currentLevel);
   const resultText = success
     ? `+${previousLevel} -> +${nextLevel}`
     : protectedByTicket
       ? `+${previousLevel} 유지`
-      : `+${previousLevel} -> 파괴`;
+      : destroyed
+        ? `+${previousLevel} -> 파괴`
+        : `+${previousLevel} 유지`;
   const embed = createUiEmbed({
     color,
-    title: success ? '아이템 강화 성공' : protectedByTicket ? '강화 실패 - 방지권 발동' : '강화 실패 - 아이템 파괴',
+    title: success
+      ? '아이템 강화 성공'
+      : protectedByTicket
+        ? '강화 실패 - 방지권 발동'
+        : destroyed
+          ? '강화 실패 - 아이템 파괴'
+          : '아이템 강화 실패',
     description: `${user}님이 **${formatItemGradeLabel(grade)} ${evolution.itemName}** 강화에 도전했습니다.`,
   })
     .addFields(
       { name: '결과', value: resultText, inline: true },
-      { name: '도전 확률', value: formatChance(chance), inline: true },
+      { name: '도전 확률', value: formatEnhancementRates(displayRates), inline: false },
       { name: '소모 노코인', value: formatCoins(cost), inline: true },
       { name: '보유 상태', value: `잔액 ${formatCoins(balance)}\n방지권 ${protectionTickets || 0}장`, inline: false },
     );
@@ -1803,7 +2073,9 @@ function createItemEnhanceEmbed({
       name: '처리',
       value: protectedByTicket
         ? '방지권이 즉시 사용되어 아이템 파괴와 레벨 초기화를 막았습니다.'
-        : '방지권이 없어 아이템 진화가 삭제되었습니다. 다시 사용하려면 같은 아이템을 `/아이템사용`으로 해금해야 합니다.',
+        : destroyed
+          ? '방지권이 없어 아이템 진화가 삭제되었습니다. 다시 사용하려면 같은 아이템을 `/아이템사용`으로 해금해야 합니다.'
+          : '아이템은 유지됐지만 강화 단계는 오르지 않았습니다.',
       inline: false,
     });
   }
@@ -1811,12 +2083,121 @@ function createItemEnhanceEmbed({
   if (!destroyed) {
     embed.addFields({
       name: '다음 강화',
-      value: `${formatCoins(nextCost)} / 성공률 ${formatChance(nextChance)}`,
+      value: `${formatCoins(nextCost)} / ${formatEnhancementRates(nextRates)}`,
       inline: false,
     });
   }
 
   return embed;
+}
+
+function createItemEnhanceConfirmEmbed({
+  user,
+  evolution,
+  cost,
+  balance,
+  previousLevel,
+  rates,
+  protectionTickets,
+}) {
+  const grade = evolution.grade || getItemGradeConfig(evolution.definition.grade);
+  const nextLevel = previousLevel + 1;
+  const safeText = rates.destructionChance <= 0
+    ? '현재 단계는 파괴되지 않고 실패만 발생합니다.'
+    : '파괴 판정이 나면 방지권이 있을 때 자동으로 1장을 사용합니다.';
+
+  return createUiEmbed({
+    color: getItemGradeColor(grade, uiTheme.colors.warning),
+    title: '아이템 강화 확인',
+    description: `${user}님, **${formatItemGradeLabel(grade)} ${evolution.itemName}** +${previousLevel} -> +${nextLevel} 강화를 진행할까요?`,
+  })
+    .addFields(
+      { name: '강화 비용', value: formatCoins(cost), inline: true },
+      { name: '현재 잔액', value: formatCoins(balance), inline: true },
+      { name: '강화 확률', value: formatEnhancementRates(rates), inline: false },
+      { name: '파괴 규칙', value: safeText, inline: false },
+      { name: '보유 방지권', value: `${protectionTickets || 0}장`, inline: true },
+    );
+}
+
+function createItemEnhanceConfirmComponents(requestId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(itemEnhanceCustomId('confirm', requestId))
+        .setLabel('강화하기')
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(itemEnhanceCustomId('cancel', requestId))
+        .setLabel('취소')
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
+function createWaterGunShotArt(distance) {
+  const maxDistance = 1900;
+  const size = 24;
+  const filled = distance > 0
+    ? Math.min(size, Math.max(1, Math.round((distance / maxDistance) * size)))
+    : 0;
+  return `발사대 |${'='.repeat(filled)}>${'.'.repeat(size - filled)}| ${formatWaterGunDistance(distance)}`;
+}
+
+function createWaterGunEmbed(stage, payload = {}) {
+  if (stage === 'ready') {
+    return createUiEmbed({
+      color: uiTheme.colors.primary,
+      title: '물총 발사 준비',
+      description: `${payload.user}님이 **${payload.picked.label}**에게 ${formatCoins(payload.wager)}을 걸었습니다.`,
+    }).addFields(
+      { name: '참가자', value: waterGunContestants.map((contestant) => contestant.label).join(' / '), inline: true },
+      { name: '지급 배율', value: '적중 시 3배', inline: true },
+      { name: '진행', value: '초야부터 한 명씩 물총을 발사합니다.', inline: false },
+    );
+  }
+
+  if (stage === 'shot') {
+    const shot = payload.shot;
+    const best = payload.best;
+    return createUiEmbed({
+      color: uiTheme.colors.inventory,
+      title: `${shot.order}번째 발사 - ${shot.label}`,
+      description: [
+        shot.motion,
+        '',
+        '```',
+        createWaterGunShotArt(shot.distance),
+        '```',
+      ].join('\n'),
+    }).addFields(
+      { name: '이번 기록', value: formatWaterGunDistance(shot.distance), inline: true },
+      { name: '현재 1등', value: `${best.label} · ${formatWaterGunDistance(best.distance)}`, inline: true },
+      { name: '내 선택', value: payload.picked.label, inline: true },
+    );
+  }
+
+  const contest = payload.contest;
+  const resultLines = contest.results
+    .map((entry, index) =>
+      `${index + 1}. ${entry.label} ${formatWaterGunDistance(entry.distance)} - ${entry.motion}`,
+    )
+    .join('\n');
+
+  return createUiEmbed({
+    color: payload.didWin ? uiTheme.colors.success : uiTheme.colors.danger,
+    title: '물총 발사 대회 결과',
+    description: payload.didWin
+      ? `${payload.user}님의 예측이 맞았습니다. ${contest.winner.label}이 가장 멀리 쐈습니다.`
+      : `${payload.user}님의 예측이 빗나갔습니다. 이번 우승은 ${contest.winner.label}입니다.`,
+  })
+    .addFields(
+      { name: '내 선택', value: payload.picked.label, inline: true },
+      { name: '우승', value: `${contest.winner.label} · ${formatWaterGunDistance(contest.winner.distance)}`, inline: true },
+      { name: '지급', value: formatCoins(payload.result.payout), inline: true },
+      { name: '발사 기록', value: truncateText(resultLines, 1024), inline: false },
+      { name: '현재 잔액', value: formatCoins(payload.result.balance), inline: true },
+    );
 }
 
 function createFishingEmbed(stage, payload = {}) {
@@ -1869,6 +2250,18 @@ function createFishingEmbed(stage, payload = {}) {
         '~~~~><>~~~~~~~~~~~~',
       ].join('\n'),
     },
+    failed: {
+      color: uiTheme.colors.muted,
+      title: '낚시 실패',
+      text: `${payload.user}님의 낚싯바늘이 텅 비어 있었습니다.`,
+      art: [
+        '      |',
+        '      |',
+        '~~~~~~|~~~~~~~~~~~~',
+        '      J   ...',
+        '~~~~~~~~~~~~~~~~~~~',
+      ].join('\n'),
+    },
   };
   const scene = scenes[stage] || scenes.cast;
   const embed = createUiEmbed({
@@ -1877,8 +2270,14 @@ function createFishingEmbed(stage, payload = {}) {
     description: `${scene.text}\n\n\`\`\`\n${scene.art}\n\`\`\``,
   });
 
-  if (stage === 'caught' && payload.reward) {
-    if (payload.reward.protectionTicket) {
+  if ((stage === 'caught' || stage === 'failed') && payload.reward) {
+    if (payload.reward.failed) {
+      embed.addFields(
+        { name: '결과', value: '아무것도 얻지 못했습니다.', inline: false },
+        { name: '실패 확률', value: formatChance(getFishingFailureChance()), inline: true },
+        { name: '현재 잔액', value: formatCoins(payload.balance), inline: true },
+      );
+    } else if (payload.reward.protectionTicket) {
       embed.addFields(
         { name: '특수 획득', value: '강화 실패 시 자동으로 아이템 파괴를 막는 방지권을 얻었습니다.', inline: false },
         { name: '보유 방지권', value: `${payload.protectionTickets || 0}장`, inline: true },
@@ -2869,10 +3268,13 @@ async function handleHelp(interaction) {
       name: '경제',
       value: formatCommandList([
         ['/지갑', '노코인과 성장 상태 확인'],
-        ['/지급', '관리자 노코인 지급'],
+        ['/지급', '봇 오너 노코인 지급'],
         ['/낚시', '아이템과 노코인 획득'],
         ['/구걸', '5분마다 노코인 획득'],
+        ['/출석', '하루 한 번 출석 보상'],
+        ['/랭킹', '잔액/전투력/강화/낚시 순위'],
         ['/상점', '비싼 아이템 구매 목록'],
+        ['/복권', '배율형 즉석 복권'],
       ]),
       inline: false,
     },
@@ -2908,6 +3310,7 @@ async function handleHelp(interaction) {
         ['/결투', '버튼으로 턴제 전투'],
         ['/동전던지기', '앞면/뒷면 도박'],
         ['/주사위', '1-6 숫자 맞히기'],
+        ['/사정', '초야/세냥/남랭 거리 맞히기'],
         ['/블랙잭', '딜러와 블랙잭'],
       ]),
       inline: false,
@@ -2965,7 +3368,8 @@ async function handleWallet(interaction) {
       {
         name: '활동 요약',
         value: [
-          `낚시 ${stats.fishing || 0}회 / 구걸 ${stats.begging || 0}회`,
+          `낚시 ${stats.fishing || 0}회(실패 ${stats.fishingFailed || 0}회) / 구걸 ${stats.begging || 0}회`,
+          `출석 ${stats.attendanceCount || 0}회 / 복권 ${stats.lotteryPlayed || 0}회`,
           `베팅 ${stats.betsWon || 0}승 ${stats.betsLost || 0}패`,
           `도박 ${stats.gamblingWon || 0}승 ${stats.gamblingLost || 0}패 ${stats.gamblingPushed || 0}무 / 수익 ${formatCoins(stats.gamblingProfit || 0)}`,
         ].join('\n'),
@@ -2978,14 +3382,184 @@ async function handleWallet(interaction) {
   });
 }
 
+async function handleRanking(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const metric = interaction.options.getString('기준') || 'balance';
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const rows = Object.keys(guild.users || {})
+      .map((userId) => {
+        const user = store.ensureUser(guild, userId);
+        return {
+          userId,
+          name: user.displayName || user.username || `<@${userId}>`,
+          value: getRankingMetric(user, metric),
+        };
+      })
+      .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name, 'ko-KR'))
+      .slice(0, 10);
+
+    return { rows };
+  });
+
+  const lines = result.rows.length > 0
+    ? result.rows.map((row, index) =>
+      `${index + 1}. ${row.name} · ${formatRankingValue(metric, row.value)}`,
+    ).join('\n')
+    : '아직 랭킹에 표시할 유저가 없습니다.';
+
+  const embed = createUiEmbed({
+    color: uiTheme.colors.economy,
+    title: `${getRankingLabel(metric)} 랭킹`,
+    description: truncateText(lines, 2048),
+  });
+
+  await reply(interaction, {
+    embeds: [embed],
+  });
+}
+
+async function handleAttendance(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const today = getKoreaDateKey();
+  const yesterday = getPreviousDateKey(today);
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+    user.attendance ||= { lastDate: null, streak: 0, bestStreak: 0 };
+
+    if (user.attendance.lastDate === today) {
+      return {
+        ok: false,
+        streak: user.attendance.streak || 0,
+        balance: user.balance,
+      };
+    }
+
+    const streak = user.attendance.lastDate === yesterday
+      ? Math.max(0, Math.floor(user.attendance.streak || 0)) + 1
+      : 1;
+    const reward = getAttendanceReward(streak);
+    user.balance += reward;
+    user.attendance.lastDate = today;
+    user.attendance.streak = streak;
+    user.attendance.bestStreak = Math.max(Math.floor(user.attendance.bestStreak || 0), streak);
+    guild.dailyActions.attendance[interaction.user.id] = today;
+    user.stats.attendanceCount = (user.stats.attendanceCount || 0) + 1;
+    user.stats.attendanceReward = (user.stats.attendanceReward || 0) + reward;
+
+    return {
+      ok: true,
+      reward,
+      streak,
+      bestStreak: user.attendance.bestStreak,
+      balance: user.balance,
+    };
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: `오늘(${today}) 출석은 이미 받았습니다. 현재 연속 출석: ${result.streak}일`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const embed = createUiEmbed({
+    color: uiTheme.colors.success,
+    title: '출석 완료',
+    description: `${interaction.user}님이 오늘(${today}) 출석 보상을 받았습니다.`,
+  }).addFields(
+    { name: '획득', value: formatCoins(result.reward), inline: true },
+    { name: '연속 출석', value: `${result.streak}일`, inline: true },
+    { name: '최고 기록', value: `${result.bestStreak}일`, inline: true },
+    { name: '현재 잔액', value: formatCoins(result.balance), inline: false },
+  );
+
+  await reply(interaction, {
+    embeds: [embed],
+  });
+}
+
+async function handleLottery(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const wager = interaction.options.getInteger('금액', true);
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+
+    if (user.balance < wager) {
+      return {
+        ok: false,
+        reason: `노코인이 부족합니다. 현재 잔액: ${formatCoins(user.balance)}`,
+      };
+    }
+
+    const lottery = drawLottery(wager);
+    user.balance -= wager;
+    user.balance += lottery.payout;
+    user.stats.lotteryPlayed = (user.stats.lotteryPlayed || 0) + 1;
+    user.stats.lotterySpent = (user.stats.lotterySpent || 0) + wager;
+    user.stats.lotteryPayout = (user.stats.lotteryPayout || 0) + lottery.payout;
+    if (lottery.payout > wager) {
+      user.stats.lotteryWon = (user.stats.lotteryWon || 0) + 1;
+    }
+
+    recordGamblingResult(
+      user,
+      lottery.profit > 0 ? 'win' : lottery.profit < 0 ? 'loss' : 'push',
+      lottery.profit,
+      'lottery',
+    );
+
+    return {
+      ok: true,
+      lottery,
+      balance: user.balance,
+    };
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const embed = createUiEmbed({
+    color: result.lottery.color,
+    title: `복권 ${result.lottery.label}`,
+    description: `${interaction.user}님이 ${formatCoins(wager)} 복권을 긁었습니다.`,
+  }).addFields(
+    { name: '배율', value: `${result.lottery.multiplier}배`, inline: true },
+    { name: '지급', value: formatCoins(result.lottery.payout), inline: true },
+    { name: '손익', value: formatCoins(result.lottery.profit), inline: true },
+    { name: '현재 잔액', value: formatCoins(result.balance), inline: false },
+  );
+
+  await reply(interaction, {
+    embeds: [embed],
+  });
+}
+
 async function handleGrant(interaction) {
   if (!(await requireGuild(interaction))) {
     return;
   }
 
-  if (!isBotManager(interaction)) {
+  if (!ownerIds.has(interaction.user.id)) {
     await reply(interaction, {
-      content: '노코인 지급은 서버 관리자만 사용할 수 있습니다.',
+      content: '노코인 지급은 BOT_OWNER_IDS에 등록된 봇 오너만 사용할 수 있습니다.',
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -3279,15 +3853,30 @@ async function handleUseItem(interaction) {
 
     const useCount = useAll ? item.count : 1;
     const baseGain = getItemPowerGain(item);
+    const grade = getItemGradeConfig(baseGain.evolution.grade);
+    const useChance = getItemUseChance(grade.key);
+    let successCount = 0;
+
+    for (let index = 0; index < useCount; index += 1) {
+      if (rollItemUse(grade.key).success) {
+        successCount += 1;
+      }
+    }
+
+    const failedCount = useCount - successCount;
     const gain = {
       ...baseGain,
-      attack: baseGain.attack * useCount,
-      defense: baseGain.defense * useCount,
-      luck: baseGain.luck * useCount,
+      attack: baseGain.attack * successCount,
+      defense: baseGain.defense * successCount,
+      luck: baseGain.luck * successCount,
     };
     user.stats.itemsUsed += useCount;
-    const evolutionRecord = applyItemEvolution(user, item, gain.evolution, useCount);
-    const evolvedWeapon = findUserEvolutionByKey(user, item.key);
+    user.stats.itemUseSuccesses = (user.stats.itemUseSuccesses || 0) + successCount;
+    user.stats.itemUseFailures = (user.stats.itemUseFailures || 0) + failedCount;
+    const evolutionRecord = successCount > 0
+      ? applyItemEvolution(user, item, gain.evolution, successCount)
+      : null;
+    const evolvedWeapon = successCount > 0 ? findUserEvolutionByKey(user, item.key) : null;
 
     const current = user.inventory[item.key];
     if (current && typeof current === 'object') {
@@ -3319,7 +3908,10 @@ async function handleUseItem(interaction) {
       gain,
       evolutionRecord,
       usedCount: useCount,
-      weaponPower: getWeaponBattlePower(evolvedWeapon),
+      successCount,
+      failedCount,
+      useChance,
+      weaponPower: evolvedWeapon ? getWeaponBattlePower(evolvedWeapon) : null,
       remaining,
     };
   });
@@ -3334,15 +3926,18 @@ async function handleUseItem(interaction) {
 
   await reply(interaction, {
     embeds: [
-      createItemUseEmbed(
-        interaction.user,
-        result.item,
-        result.gain,
-        result.weaponPower,
-        result.remaining,
-        result.evolutionRecord,
-        result.usedCount,
-      ),
+      createItemUseEmbed({
+        user: interaction.user,
+        item: result.item,
+        gain: result.gain,
+        weaponPower: result.weaponPower,
+        remaining: result.remaining,
+        evolutionRecord: result.evolutionRecord,
+        usedCount: result.usedCount,
+        successCount: result.successCount,
+        failedCount: result.failedCount,
+        useChance: result.useChance,
+      }),
     ],
   });
 }
@@ -3378,7 +3973,140 @@ async function handleEnhanceItem(interaction) {
       ? Math.max(0, Math.floor(current.enhanceLevel))
       : 0;
     const cost = getItemEnhancementCost(grade.key, previousLevel);
-    const chance = getItemEnhancementChance(grade.key, previousLevel);
+    const rates = getItemEnhancementRates(grade.key, previousLevel);
+
+    if (user.balance < cost) {
+      return {
+        ok: false,
+        reason: `노코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+      };
+    }
+
+    return {
+      ok: true,
+      evolution: {
+        ...evolution,
+        grade,
+      },
+      protectionTickets: user.protectionTickets,
+      rates,
+      cost,
+      previousLevel,
+      balance: user.balance,
+    };
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const requestId = createItemEnhancementRequestId();
+  pendingItemEnhancements.set(requestId, {
+    guildId: interaction.guildId,
+    userId: interaction.user.id,
+    itemKey: result.evolution.key,
+    itemName: result.evolution.itemName,
+    previousLevel: result.previousLevel,
+    cost: result.cost,
+    createdAt: Date.now(),
+  });
+
+  await reply(interaction, {
+    embeds: [
+      createItemEnhanceConfirmEmbed({
+        user: interaction.user,
+        evolution: result.evolution,
+        cost: result.cost,
+        previousLevel: result.previousLevel,
+        rates: result.rates,
+        protectionTickets: result.protectionTickets,
+        balance: result.balance,
+      }),
+    ],
+    components: createItemEnhanceConfirmComponents(requestId),
+  });
+}
+
+async function handleItemEnhanceUiInteraction(interaction) {
+  const parsed = parseItemEnhanceCustomId(interaction.customId);
+  if (!parsed) {
+    return false;
+  }
+
+  if (!interaction.isButton()) {
+    return false;
+  }
+
+  if (!(await requireGuild(interaction))) {
+    return true;
+  }
+
+  const request = getPendingItemEnhancement(parsed.requestId, interaction.guildId);
+  if (!request) {
+    await interaction.reply({
+      content: '강화 확인 시간이 지났습니다. `/아이템강화`로 다시 확인해 주세요.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (request.userId !== interaction.user.id) {
+    await interaction.reply({
+      content: '이 강화 버튼은 명령어를 실행한 사람만 누를 수 있습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (parsed.action === 'cancel') {
+    pendingItemEnhancements.delete(parsed.requestId);
+    await interaction.update({
+      content: `${interaction.user}님의 아이템 강화를 취소했습니다.`,
+      embeds: [],
+      components: [],
+    });
+    return true;
+  }
+
+  if (parsed.action !== 'confirm') {
+    await interaction.reply({
+      content: '알 수 없는 강화 버튼입니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+    const evolution = findUserEvolutionByKey(user, request.itemKey);
+
+    if (!evolution) {
+      return {
+        ok: false,
+        reason: '강화할 진화를 더 이상 찾을 수 없습니다. 다시 아이템을 확인해 주세요.',
+      };
+    }
+
+    const current = user.evolutions[evolution.key];
+    const grade = evolution.grade || getItemGradeConfig(evolution.definition.grade);
+    const previousLevel = Number.isFinite(current.enhanceLevel)
+      ? Math.max(0, Math.floor(current.enhanceLevel))
+      : 0;
+
+    if (previousLevel !== request.previousLevel) {
+      return {
+        ok: false,
+        reason: `강화 단계가 바뀌었습니다. 현재 +${previousLevel} 상태에서 다시 \`/아이템강화\`를 실행해 주세요.`,
+      };
+    }
+
+    const cost = getItemEnhancementCost(grade.key, previousLevel);
+    const rates = getItemEnhancementRates(grade.key, previousLevel);
 
     if (user.balance < cost) {
       return {
@@ -3410,15 +4138,23 @@ async function handleEnhanceItem(interaction) {
       current.enhancePowerBonus.defense = Math.max(0, Math.floor(current.enhancePowerBonus.defense || 0)) + gain.defense;
       current.enhancePowerBonus.luck = Math.max(0, Math.floor(current.enhancePowerBonus.luck || 0)) + gain.luck;
     } else {
-      if (user.protectionTickets > 0) {
-        user.protectionTickets -= 1;
-        user.stats.protectionTicketsUsed += 1;
-        protectedByTicket = true;
-        current.enhanceLevel = previousLevel;
-        current.lastProtectedAt = new Date().toISOString();
+      user.stats.itemEnhanceFailures = (user.stats.itemEnhanceFailures || 0) + 1;
+
+      if (rolled.destroyed) {
+        if (user.protectionTickets > 0) {
+          user.protectionTickets -= 1;
+          user.stats.protectionTicketsUsed += 1;
+          protectedByTicket = true;
+          current.enhanceLevel = previousLevel;
+          current.lastProtectedAt = new Date().toISOString();
+        } else {
+          delete user.evolutions[evolution.key];
+          destroyed = true;
+          user.stats.itemEnhanceDestroyed = (user.stats.itemEnhanceDestroyed || 0) + 1;
+        }
       } else {
-        delete user.evolutions[evolution.key];
-        destroyed = true;
+        current.enhanceLevel = previousLevel;
+        current.lastEnhanceFailedAt = new Date().toISOString();
       }
     }
 
@@ -3435,7 +4171,8 @@ async function handleEnhanceItem(interaction) {
       protectedByTicket,
       destroyed,
       protectionTickets: user.protectionTickets,
-      chance,
+      chance: rolled.chance,
+      rates,
       cost,
       previousLevel,
       nextLevel: destroyed ? 0 : current.enhanceLevel,
@@ -3445,21 +4182,25 @@ async function handleEnhanceItem(interaction) {
     };
   });
 
+  pendingItemEnhancements.delete(parsed.requestId);
+
   if (!result.ok) {
-    await reply(interaction, {
+    await interaction.update({
       content: result.reason,
-      flags: MessageFlags.Ephemeral,
+      embeds: [],
+      components: [],
     });
-    return;
+    return true;
   }
 
-  await reply(interaction, {
+  await interaction.update({
     embeds: [
       createItemEnhanceEmbed({
         user: interaction.user,
         evolution: result.evolution,
         success: result.success,
         chance: result.chance,
+        rates: result.rates,
         cost: result.cost,
         previousLevel: result.previousLevel,
         nextLevel: result.nextLevel,
@@ -3471,7 +4212,10 @@ async function handleEnhanceItem(interaction) {
         balance: result.balance,
       }),
     ],
+    components: [],
   });
+
+  return true;
 }
 
 async function handleBattle(interaction) {
@@ -4594,6 +5338,15 @@ async function handleFishing(interaction) {
     user.stats.fishing += 1;
     guild.cooldowns.fishing[interaction.user.id] = now;
 
+    if (reward.failed) {
+      user.stats.fishingFailed = (user.stats.fishingFailed || 0) + 1;
+      return {
+        ok: true,
+        reward,
+        balance: user.balance,
+      };
+    }
+
     if (reward.protectionTicket) {
       user.protectionTickets += 1;
       user.stats.protectionTicketsFound += 1;
@@ -4643,7 +5396,7 @@ async function handleFishing(interaction) {
   await interaction.editReply({
     content: `${interaction.user}님의 낚시 결과`,
     embeds: [
-      createFishingEmbed('caught', {
+      createFishingEmbed(result.reward.failed ? 'failed' : 'caught', {
         user: interaction.user,
         reward: result.reward,
         inventoryItem: result.inventoryItem,
@@ -4791,6 +5544,88 @@ async function handleDice(interaction) {
   await reply(interaction, {
     content: `${interaction.user}님의 주사위 결과`,
     embeds: [embed],
+  });
+}
+
+async function handleWaterGun(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const choice = interaction.options.getString('선택', true);
+  const wager = interaction.options.getInteger('금액', true);
+  const picked = getWaterGunContestant(choice);
+
+  if (!picked) {
+    await reply(interaction, {
+      content: '선택지를 찾을 수 없습니다. 초야, 세냥, 남랭 중에서 골라 주세요.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const contest = simulateWaterGunContest();
+  const didWin = contest.winner.key === picked.key;
+  const result = await settleInstantGamble({
+    guildId: interaction.guildId,
+    discordUser: interaction.user,
+    wager,
+    multiplier: 3,
+    didWin,
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply();
+  await interaction.editReply({
+    content: `${interaction.user}님의 물총 베팅`,
+    embeds: [
+      createWaterGunEmbed('ready', {
+        user: interaction.user,
+        picked,
+        wager,
+      }),
+    ],
+  });
+  await wait(850);
+
+  let best = null;
+  for (let index = 0; index < contest.shots.length; index += 1) {
+    const shot = contest.shots[index];
+    if (!best || shot.distance > best.distance) {
+      best = shot;
+    }
+
+    await interaction.editReply({
+      content: `${interaction.user}님의 물총 발사 중 (${index + 1}/${contest.shots.length})`,
+      embeds: [
+        createWaterGunEmbed('shot', {
+          shot,
+          best,
+          picked,
+        }),
+      ],
+    });
+    await wait(950);
+  }
+
+  await interaction.editReply({
+    content: `${interaction.user}님의 물총 베팅 결과`,
+    embeds: [
+      createWaterGunEmbed('final', {
+        user: interaction.user,
+        picked,
+        contest,
+        didWin,
+        result,
+      }),
+    ],
   });
 }
 
@@ -5107,6 +5942,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
+      const handledItemEnhance = await handleItemEnhanceUiInteraction(interaction);
+      if (handledItemEnhance) {
+        return;
+      }
+
       const handledBlackjack = await handleBlackjackUiInteraction(interaction);
       if (handledBlackjack) {
         return;
@@ -5133,6 +5973,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case '지갑':
         await handleWallet(interaction);
+        break;
+      case '랭킹':
+        await handleRanking(interaction);
+        break;
+      case '출석':
+        await handleAttendance(interaction);
+        break;
+      case '복권':
+        await handleLottery(interaction);
         break;
       case '지급':
         await handleGrant(interaction);
@@ -5190,6 +6039,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case '주사위':
         await handleDice(interaction);
+        break;
+      case '사정':
+        await handleWaterGun(interaction);
         break;
       case '블랙잭':
         await handleBlackjack(interaction);

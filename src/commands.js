@@ -32,9 +32,40 @@ function buildCommandData() {
       ),
 
     new SlashCommandBuilder()
+      .setName('랭킹')
+      .setDescription('서버 노코인 게임 랭킹을 확인합니다.')
+      .addStringOption((option) =>
+        option
+          .setName('기준')
+          .setDescription('랭킹 기준입니다.')
+          .setRequired(false)
+          .addChoices(
+            { name: '잔액', value: 'balance' },
+            { name: '전투력', value: 'power' },
+            { name: '강화', value: 'enhance' },
+            { name: '낚시', value: 'fishing' },
+          ),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('출석')
+      .setDescription('하루 한 번 출석 보상을 받습니다.'),
+
+    new SlashCommandBuilder()
+      .setName('복권')
+      .setDescription('노코인을 걸고 복권을 긁습니다.')
+      .addIntegerOption((option) =>
+        option
+          .setName('금액')
+          .setDescription('복권 구매 금액입니다.')
+          .setRequired(true)
+          .setMinValue(100)
+          .setMaxValue(100000000),
+      ),
+
+    new SlashCommandBuilder()
       .setName('지급')
-      .setDescription('관리자가 유저에게 노코인을 지급합니다.')
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .setDescription('봇 오너가 유저에게 노코인을 지급합니다.')
       .addUserOption((option) =>
         option
           .setName('유저')
@@ -287,6 +318,29 @@ function buildCommandData() {
         option
           .setName('금액')
           .setDescription('걸 노코인 금액입니다. 맞히면 6배를 돌려받습니다.')
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(100000000),
+      ),
+
+    new SlashCommandBuilder()
+      .setName('사정')
+      .setDescription('초야, 세냥, 남랭 중 누가 가장 멀리 쌀지 베팅합니다.')
+      .addStringOption((option) =>
+        option
+          .setName('선택')
+          .setDescription('가장 멀리 쌀 것 같은 사람입니다.')
+          .setRequired(true)
+          .addChoices(
+            { name: '초야', value: 'choya' },
+            { name: '세냥', value: 'senyang' },
+            { name: '남랭', value: 'namraeng' },
+          ),
+      )
+      .addIntegerOption((option) =>
+        option
+          .setName('금액')
+          .setDescription('걸 노코인 금액입니다. 맞히면 3배를 돌려받습니다.')
           .setRequired(true)
           .setMinValue(1)
           .setMaxValue(100000000),
