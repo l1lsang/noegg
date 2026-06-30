@@ -240,7 +240,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('아이템확률')
-      .setDescription('낚시 아이템 등급별 획득 확률을 확인합니다.'),
+      .setDescription('낚시 확률, 사용 성공률, 아이템 합성 규칙을 확인합니다.'),
 
     new SlashCommandBuilder()
       .setName('상점')

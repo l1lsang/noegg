@@ -99,11 +99,11 @@ const bankruptcyCooldownMs = 30 * 60 * 1000;
 const pendingItemEnhancements = new Map();
 const itemEnhancementTtlMs = 5 * 60 * 1000;
 const itemSynthesisGradeSteps = [
-  { source: 'common', target: 'uncommon', materials: { common: 6 }, costMultiplier: 1.1 },
-  { source: 'uncommon', target: 'rare', materials: { uncommon: 8 }, costMultiplier: 1.8 },
-  { source: 'rare', target: 'epic', materials: { rare: 8 }, costMultiplier: 2.8 },
-  { source: 'epic', target: 'legendary', materials: { common: 6, uncommon: 4, rare: 4, epic: 6 }, costMultiplier: 6.5 },
-  { source: 'legendary', target: 'mythic', materials: { epic: 4, legendary: 6 }, costMultiplier: 12 },
+  { source: 'common', target: 'uncommon', materials: { common: 6 }, costMultiplier: 1.1, itemCostMultiplier: 0.3 },
+  { source: 'uncommon', target: 'rare', materials: { uncommon: 8 }, costMultiplier: 1.8, itemCostMultiplier: 0.5 },
+  { source: 'rare', target: 'epic', materials: { rare: 8 }, costMultiplier: 2.8, itemCostMultiplier: 0.75 },
+  { source: 'epic', target: 'legendary', materials: { common: 6, uncommon: 4, rare: 4, epic: 6 }, costMultiplier: 6.5, itemCostMultiplier: 1.5 },
+  { source: 'legendary', target: 'mythic', materials: { epic: 4, legendary: 6 }, costMultiplier: 12, itemCostMultiplier: 2.4 },
 ];
 const shopGradePriceMultipliers = {
   common: 1.7,
@@ -113,6 +113,7 @@ const shopGradePriceMultipliers = {
   legendary: 9,
   mythic: 15,
 };
+const protectionTicketPrice = 350000;
 const gradeOrder = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythic'];
 const armorDrawCost = 18000 * economyMultiplier;
 const armorGradeProfiles = {
@@ -415,7 +416,7 @@ function getShopItems() {
     type: 'protection_ticket',
     protectionTicket: true,
     grade: protectionTicketGrade,
-    price: Math.ceil(protectionTicketGrade.baseCost * shopGradePriceMultipliers.legendary),
+    price: protectionTicketPrice,
   };
 
   return listFishingItems(economyMultiplier)
@@ -622,6 +623,22 @@ function getArmorSynthesisRecipe(targetGradeKey) {
 function getSynthesisCost(step) {
   const targetGrade = getItemGradeConfig(step.target);
   return Math.ceil(targetGrade.baseCost * (step.costMultiplier || 1) * economyMultiplier);
+}
+
+function getItemSynthesisCost(step) {
+  const targetGrade = getItemGradeConfig(step.target);
+  const scale = Math.max(1, economyMultiplier / 100);
+  return Math.ceil(targetGrade.baseCost * (step.itemCostMultiplier || step.costMultiplier || 1) * scale);
+}
+
+function formatItemSynthesisRules() {
+  return itemSynthesisGradeSteps
+    .map((step) => [
+      `${formatItemGradeLabel(step.source)} -> ${formatItemGradeLabel(step.target)}`,
+      `${formatMaterialRequirements(step.materials)} + ${formatCoins(getItemSynthesisCost(step))}`,
+      '결과는 목표 등급 아이템 중 랜덤 1개',
+    ].join(' · '))
+    .join('\n');
 }
 
 function formatMaterialRequirements(materials) {
@@ -3347,6 +3364,7 @@ function createItemRatesEmbed() {
   const armorLines = gradeOrder
     .map((gradeKey) => `${formatItemGradeLabel(gradeKey)} ${formatChance(getArmorProfile(gradeKey).drawWeight / armorWeightTotal)}`)
     .join('\n');
+  const itemSynthesisRules = formatItemSynthesisRules();
 
   return createUiEmbed({
     color: uiTheme.colors.inventory,
@@ -3356,6 +3374,7 @@ function createItemRatesEmbed() {
     .addFields(
       { name: '등급별 확률', value: gradeLines || '확률 정보가 없습니다.', inline: false },
       { name: '아이템 사용 성공률', value: useLines || '확률 정보가 없습니다.', inline: false },
+      { name: '아이템 합성 규칙', value: truncateText(itemSynthesisRules, 1024), inline: false },
       { name: '방어구 뽑기 확률', value: armorLines, inline: false },
       { name: '특수 획득', value: `강화 방지권 ${formatChance(protectionChance)} · 아이템 사용 실패/강화 파괴 보호`, inline: true },
       { name: '실패', value: `빈손 ${formatChance(failureChance)}`, inline: true },
@@ -3396,6 +3415,12 @@ function createShopEmbed(user) {
       inline: false,
     });
   }
+
+  embed.addFields({
+    name: '아이템 합성 규칙',
+    value: truncateText(formatItemSynthesisRules(), 1024),
+    inline: false,
+  });
 
   return embed;
 }
@@ -5696,7 +5721,7 @@ async function handleSynthesizeItem(interaction) {
 
     const sourceGrade = getItemGradeConfig(step.source);
     const targetGrade = getItemGradeConfig(step.target);
-    const cost = getSynthesisCost(step);
+    const cost = getItemSynthesisCost(step);
     const materials = step.materials || { [step.source]: 1 };
 
     if (user.balance < cost) {
