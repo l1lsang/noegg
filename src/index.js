@@ -2148,12 +2148,12 @@ function createWaterGunEmbed(stage, payload = {}) {
   if (stage === 'ready') {
     return createUiEmbed({
       color: uiTheme.colors.primary,
-      title: '물총 발사 준비',
+      title: '발사 준비',
       description: `${payload.user}님이 **${payload.picked.label}**에게 ${formatCoins(payload.wager)}을 걸었습니다.`,
     }).addFields(
       { name: '참가자', value: waterGunContestants.map((contestant) => contestant.label).join(' / '), inline: true },
       { name: '지급 배율', value: '적중 시 3배', inline: true },
-      { name: '진행', value: '초야부터 한 명씩 물총을 발사합니다.', inline: false },
+      { name: '진행', value: '초야부터 한 명씩 정액을 발사합니다.', inline: false },
     );
   }
 
@@ -2186,7 +2186,7 @@ function createWaterGunEmbed(stage, payload = {}) {
 
   return createUiEmbed({
     color: payload.didWin ? uiTheme.colors.success : uiTheme.colors.danger,
-    title: '물총 발사 대회 결과',
+    title: '사정 대회 결과',
     description: payload.didWin
       ? `${payload.user}님의 예측이 맞았습니다. ${contest.winner.label}이 가장 멀리 쐈습니다.`
       : `${payload.user}님의 예측이 빗나갔습니다. 이번 우승은 ${contest.winner.label}입니다.`,
@@ -5584,7 +5584,7 @@ async function handleWaterGun(interaction) {
 
   await interaction.deferReply();
   await interaction.editReply({
-    content: `${interaction.user}님의 물총 베팅`,
+    content: `${interaction.user}님의 사정 베팅`,
     embeds: [
       createWaterGunEmbed('ready', {
         user: interaction.user,
@@ -5603,7 +5603,7 @@ async function handleWaterGun(interaction) {
     }
 
     await interaction.editReply({
-      content: `${interaction.user}님의 물총 발사 중 (${index + 1}/${contest.shots.length})`,
+      content: `${interaction.user}님 발사 중 (${index + 1}/${contest.shots.length})`,
       embeds: [
         createWaterGunEmbed('shot', {
           shot,
@@ -5616,7 +5616,7 @@ async function handleWaterGun(interaction) {
   }
 
   await interaction.editReply({
-    content: `${interaction.user}님의 물총 베팅 결과`,
+    content: `${interaction.user}님의 사정 베팅 결과`,
     embeds: [
       createWaterGunEmbed('final', {
         user: interaction.user,
