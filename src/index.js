@@ -2009,6 +2009,241 @@ function resolveBattleMove({
   };
 }
 
+function getBattleSideUserId(source, side) {
+  if (side === 'challenger') {
+    return source.challengerId;
+  }
+
+  if (side === 'opponent') {
+    return source.opponentId;
+  }
+
+  return null;
+}
+
+function getBattleSideLabel(side) {
+  return side === 'challenger' ? '도전자' : '상대';
+}
+
+function getBattleUserSide(source, userId) {
+  if (userId === source.challengerId) {
+    return 'challenger';
+  }
+
+  if (userId === source.opponentId) {
+    return 'opponent';
+  }
+
+  return null;
+}
+
+function getBattleSpectatorBetEntries(source) {
+  const rawBets = source?.spectatorBets;
+  const entries = Array.isArray(rawBets)
+    ? rawBets
+    : Object.values(rawBets && typeof rawBets === 'object' ? rawBets : {});
+
+  return entries
+    .map((bet) => ({
+      userId: String(bet.userId || ''),
+      side: bet.side,
+      amount: Math.max(0, Math.floor(Number(bet.amount) || 0)),
+      createdAt: bet.createdAt,
+      updatedAt: bet.updatedAt,
+    }))
+    .filter((bet) => bet.userId && getBattleSideUserId(source, bet.side) && bet.amount > 0);
+}
+
+function getBattleSpectatorBetTotals(source) {
+  const totals = {
+    challenger: 0,
+    opponent: 0,
+  };
+  const counts = {
+    challenger: 0,
+    opponent: 0,
+  };
+
+  for (const bet of getBattleSpectatorBetEntries(source)) {
+    totals[bet.side] += bet.amount;
+    counts[bet.side] += 1;
+  }
+
+  return {
+    totals,
+    counts,
+    total: totals.challenger + totals.opponent,
+  };
+}
+
+function formatBattleSpectatorPledgeSummary(challenge) {
+  const { totals, counts, total } = getBattleSpectatorBetTotals(challenge);
+
+  if (total <= 0) {
+    return '아직 관전 베팅이 없습니다. 참가자 둘을 제외한 유저가 아래 버튼으로 승자를 고를 수 있습니다.';
+  }
+
+  return [
+    `${getBattleSideLabel('challenger')}(<@${challenge.challengerId}>) 승: ${formatCoins(totals.challenger)} · ${counts.challenger}명`,
+    `${getBattleSideLabel('opponent')}(<@${challenge.opponentId}>) 승: ${formatCoins(totals.opponent)} · ${counts.opponent}명`,
+    `총 예약 풀: ${formatCoins(total)}`,
+  ].join('\n');
+}
+
+function formatBattleSpectatorActiveSummary(session) {
+  const { totals, counts, total } = getBattleSpectatorBetTotals(session);
+
+  if (total <= 0) {
+    return null;
+  }
+
+  return `관전 풀 ${formatCoins(total)} · <@${session.challengerId}> 승 ${formatCoins(totals.challenger)}(${counts.challenger}명) / <@${session.opponentId}> 승 ${formatCoins(totals.opponent)}(${counts.opponent}명)`;
+}
+
+function collectBattleSpectatorBets(guild, challenge) {
+  const bets = [];
+  const skipped = [];
+
+  for (const bet of getBattleSpectatorBetEntries(challenge)) {
+    if (isBattleParticipant(challenge, bet.userId)) {
+      skipped.push({ ...bet, reason: 'participant' });
+      continue;
+    }
+
+    const user = store.ensureUser(guild, bet.userId);
+    if (user.balance < bet.amount) {
+      skipped.push({ ...bet, reason: 'balance' });
+      continue;
+    }
+
+    user.balance -= bet.amount;
+    bets.push({
+      userId: bet.userId,
+      side: bet.side,
+      amount: bet.amount,
+      createdAt: bet.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  return { bets, skipped };
+}
+
+function settleBattleSpectatorBets(guild, session) {
+  const bets = getBattleSpectatorBetEntries(session);
+  const totalPool = bets.reduce((sum, bet) => sum + bet.amount, 0);
+  const winnerSide = getBattleUserSide(session, session.winnerId);
+  const winners = bets.filter((bet) => bet.side === winnerSide);
+  const losers = bets.filter((bet) => bet.side !== winnerSide);
+  const winningPool = winners.reduce((sum, bet) => sum + bet.amount, 0);
+  const payouts = [];
+  const skippedCount = Math.max(0, Math.floor(session.spectatorBetSkippedCount || 0));
+
+  if (totalPool <= 0) {
+    return {
+      totalPool,
+      winningPool,
+      winnerSide,
+      winnerCount: 0,
+      loserCount: 0,
+      payouts,
+      unpaidPool: 0,
+      skippedCount,
+    };
+  }
+
+  if (winners.length === 0 || winningPool <= 0) {
+    for (const bet of bets) {
+      const user = store.ensureUser(guild, bet.userId);
+      user.stats.betsLost += 1;
+    }
+
+    return {
+      totalPool,
+      winningPool: 0,
+      winnerSide,
+      winnerCount: 0,
+      loserCount: bets.length,
+      payouts,
+      unpaidPool: totalPool,
+      skippedCount,
+    };
+  }
+
+  let paid = 0;
+  const calculated = winners.map((bet) => {
+    const payout = Math.floor((totalPool * bet.amount) / winningPool);
+    paid += payout;
+    return { bet, payout };
+  });
+
+  let remainder = totalPool - paid;
+  calculated.sort((a, b) => b.bet.amount - a.bet.amount || a.bet.userId.localeCompare(b.bet.userId));
+
+  for (const item of calculated) {
+    if (remainder > 0) {
+      item.payout += 1;
+      remainder -= 1;
+    }
+
+    const user = store.ensureUser(guild, item.bet.userId);
+    user.balance += item.payout;
+    user.stats.betsWon += 1;
+    payouts.push({
+      userId: item.bet.userId,
+      wager: item.bet.amount,
+      amount: item.payout,
+    });
+  }
+
+  for (const bet of losers) {
+    const user = store.ensureUser(guild, bet.userId);
+    user.stats.betsLost += 1;
+  }
+
+  return {
+    totalPool,
+    winningPool,
+    winnerSide,
+    winnerCount: winners.length,
+    loserCount: losers.length,
+    payouts,
+    unpaidPool: 0,
+    skippedCount,
+  };
+}
+
+function formatBattleSpectatorSettlement(betting) {
+  if (!betting) {
+    return null;
+  }
+
+  const lines = [];
+
+  if (betting.totalPool > 0) {
+    lines.push(`총 풀 ${formatCoins(betting.totalPool)} / 당첨 ${betting.winnerCount}명 / 낙첨 ${betting.loserCount}명`);
+
+    if (betting.winnerCount <= 0) {
+      lines.push('승자 쪽에 건 관전자가 없어 지급 없이 종료되었습니다.');
+    } else {
+      const payoutLines = betting.payouts
+        .slice(0, 6)
+        .map((payout) => `<@${payout.userId}> ${formatCoins(payout.amount)} 지급`);
+      lines.push(...payoutLines);
+
+      if (betting.payouts.length > payoutLines.length) {
+        lines.push(`외 ${betting.payouts.length - payoutLines.length}명 지급`);
+      }
+    }
+  }
+
+  if (betting.skippedCount > 0) {
+    lines.push(`잔액 부족 등으로 ${betting.skippedCount}건 제외`);
+  }
+
+  return lines.length > 0 ? truncateText(lines.join('\n'), 1024) : null;
+}
+
 function createBattleSession(challenge, challengerRecord, opponentRecord) {
   const challengerWeaponKey = challenge.weaponKeys?.[challenge.challengerId];
   const opponentWeaponKey = challenge.weaponKeys?.[challenge.opponentId];
@@ -2022,6 +2257,25 @@ function createBattleSession(challenge, challengerRecord, opponentRecord) {
     ? challenge.challengerId
     : challenge.opponentId;
   const now = Date.now();
+  const spectatorBets = getBattleSpectatorBetEntries(challenge);
+  const spectatorBetTotals = getBattleSpectatorBetTotals({ ...challenge, spectatorBets });
+  const spectatorBetSkippedCount = Array.isArray(challenge.spectatorBetSkipped)
+    ? challenge.spectatorBetSkipped.length
+    : 0;
+  const log = [
+    `결투가 시작되었습니다. ${getBattleDisplayName(firstUserId, {
+      [challenge.challengerId]: challengerRecord,
+      [challenge.opponentId]: opponentRecord,
+    })}님이 먼저 움직입니다.`,
+  ];
+
+  if (spectatorBetTotals.total > 0) {
+    log.push(`관전 베팅 ${spectatorBets.length}건, 총 ${formatCoins(spectatorBetTotals.total)}이 확정되었습니다.`);
+  }
+
+  if (spectatorBetSkippedCount > 0) {
+    log.push(`잔액 부족으로 관전 베팅 ${spectatorBetSkippedCount}건은 제외되었습니다.`);
+  }
 
   return {
     id: challenge.id,
@@ -2067,12 +2321,9 @@ function createBattleSession(challenge, challengerRecord, opponentRecord) {
       [challenge.challengerId]: false,
       [challenge.opponentId]: false,
     },
-    log: [
-      `결투가 시작되었습니다. ${getBattleDisplayName(firstUserId, {
-        [challenge.challengerId]: challengerRecord,
-        [challenge.opponentId]: opponentRecord,
-      })}님이 먼저 움직입니다.`,
-    ],
+    spectatorBets,
+    spectatorBetSkippedCount,
+    log,
   };
 }
 
@@ -2231,13 +2482,15 @@ function advanceBattleTurn(session, actorId, action) {
 
 function createBattleTurnEmbed(session, finalResult = null) {
   const isFinished = session.status === 'finished' || finalResult;
+  const spectatorSummary = formatBattleSpectatorActiveSummary(session);
   const embed = createUiEmbed({
     color: isFinished ? uiTheme.colors.success : uiTheme.colors.battle,
     title: isFinished ? '결투 종료' : `턴제 결투 ${session.turnNumber}/${battleMaxTurns}`,
     description: [
       `<@${session.challengerId}> vs <@${session.opponentId}>`,
       session.wager > 0 ? `판돈 ${formatCoins(session.wager)}씩 / 총 ${formatCoins(session.wager * 2)}` : '판돈 없음',
-    ].join('\n'),
+      spectatorSummary,
+    ].filter(Boolean).join('\n'),
   });
 
   embed.addFields(
@@ -2286,6 +2539,17 @@ function createBattleTurnEmbed(session, finalResult = null) {
         `<@${finalResult.winnerId}> 선택 무기 ${finalResult.durabilityLoss.winnerItemsChanged}개 -${finalResult.durabilityLoss.winner}`,
         `<@${finalResult.loserId}> 선택 무기 ${finalResult.durabilityLoss.loserItemsChanged}개 -${finalResult.durabilityLoss.loser}`,
       ].join('\n'),
+      inline: false,
+    });
+  }
+
+  const spectatorSettlement = isFinished
+    ? formatBattleSpectatorSettlement(finalResult?.spectatorBetting)
+    : null;
+  if (spectatorSettlement) {
+    embed.addFields({
+      name: '관전 베팅 정산',
+      value: spectatorSettlement,
       inline: false,
     });
   }
@@ -3179,7 +3443,8 @@ function createBattleChallengeEmbed(challenge) {
         ].join('\n'),
         inline: false,
       },
-      { name: '수락 제한', value: '5분 안에 양쪽이 무기를 고른 뒤 상대가 수락할 수 있습니다.', inline: false },
+      { name: '관전 베팅', value: formatBattleSpectatorPledgeSummary(challenge), inline: false },
+      { name: '수락 제한', value: '5분 안에 양쪽이 무기를 고른 뒤 상대가 수락할 수 있습니다. 관전 베팅은 결투 시작 시 잔액이 충분한 건만 확정됩니다.', inline: false },
     );
 
   return embed;
@@ -3200,6 +3465,16 @@ function createBattleChallengeComponents(challengeId) {
         .setCustomId(battleCustomId('decline', challengeId))
         .setLabel('거절')
         .setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(battleCustomId('sbet', challengeId, 'challenger'))
+        .setLabel('도전자 승 베팅')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(battleCustomId('sbet', challengeId, 'opponent'))
+        .setLabel('상대 승 베팅')
+        .setStyle(ButtonStyle.Danger),
     ),
   ];
 }
@@ -5298,10 +5573,44 @@ async function handleBattle(interaction) {
     embeds: [createBattleChallengeEmbed(challenge)],
     components: createBattleChallengeComponents(challengeId),
   });
+
+  const message = await interaction.fetchReply().catch(() => null);
+  if (message?.id) {
+    challenge.messageId = message.id;
+  }
 }
 
 function isBattleParticipant(challenge, userId) {
   return userId === challenge.challengerId || userId === challenge.opponentId;
+}
+
+async function updateBattleChallengeMessage(interaction, challenge) {
+  if (battleChallenges.get(challenge.id) !== challenge) {
+    return false;
+  }
+
+  if (!challenge.messageId) {
+    return false;
+  }
+
+  try {
+    const channel = interaction.channel
+      || await client.channels.fetch(challenge.channelId).catch(() => null);
+    const message = await channel?.messages?.fetch(challenge.messageId).catch(() => null);
+
+    if (!message) {
+      return false;
+    }
+
+    await message.edit({
+      embeds: [createBattleChallengeEmbed(challenge)],
+      components: createBattleChallengeComponents(challenge.id),
+    });
+    return true;
+  } catch (error) {
+    console.warn(`Failed to update battle challenge ${challenge.id}: ${error.message}`);
+    return false;
+  }
 }
 
 async function handleBattleEquipButton(interaction, parsed, challenge) {
@@ -5384,6 +5693,152 @@ async function handleBattleWeaponSelect(interaction, parsed, challenge) {
     ].join('\n'),
     components: [],
   });
+  await updateBattleChallengeMessage(interaction, challenge);
+  return true;
+}
+
+async function handleBattleSpectatorBetButton(interaction, parsed, challenge) {
+  const side = parsed.parts[0];
+  const targetUserId = getBattleSideUserId(challenge, side);
+
+  if (!targetUserId) {
+    await interaction.reply({
+      content: '알 수 없는 관전 베팅 대상입니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (isBattleParticipant(challenge, interaction.user.id)) {
+    await interaction.reply({
+      content: '결투 참가자는 관전 베팅을 할 수 없습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const modal = new ModalBuilder()
+    .setCustomId(battleCustomId('sbetModal', challenge.id, side))
+    .setTitle(`${getBattleSideLabel(side)} 승 관전 베팅`);
+  const amountInput = new TextInputBuilder()
+    .setCustomId('amount')
+    .setLabel(`${getBattleSideLabel(side)} 승 베팅 금액`)
+    .setStyle(TextInputStyle.Short)
+    .setPlaceholder('예: 1000')
+    .setRequired(true)
+    .setMinLength(1)
+    .setMaxLength(12);
+
+  modal.addComponents(new ActionRowBuilder().addComponents(amountInput));
+  await interaction.showModal(modal);
+  return true;
+}
+
+async function handleBattleSpectatorBetModal(interaction, parsed, challenge) {
+  const side = parsed.parts[0];
+  const targetUserId = getBattleSideUserId(challenge, side);
+
+  if (!targetUserId) {
+    await interaction.reply({
+      content: '알 수 없는 관전 베팅 대상입니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (isBattleParticipant(challenge, interaction.user.id)) {
+    await interaction.reply({
+      content: '결투 참가자는 관전 베팅을 할 수 없습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const rawAmount = interaction.fields.getTextInputValue('amount').replaceAll(',', '').trim();
+
+  if (!/^\d+$/.test(rawAmount)) {
+    await interaction.reply({
+      content: '베팅 금액은 숫자로 입력해 주세요.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const amount = Number(rawAmount);
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    await interaction.reply({
+      content: '베팅 금액은 1 이상의 안전한 숫자로 입력해 주세요.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const existingBets = challenge.spectatorBets && typeof challenge.spectatorBets === 'object' && !Array.isArray(challenge.spectatorBets)
+    ? challenge.spectatorBets
+    : {};
+  const existing = existingBets[interaction.user.id];
+
+  if (existing && existing.side !== side) {
+    await interaction.reply({
+      content: `이미 ${getBattleSideLabel(existing.side)} 쪽에 관전 베팅했습니다. 반대편으로는 추가 베팅할 수 없습니다.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const nextAmount = (existing?.amount || 0) + amount;
+  const check = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+
+    if (user.balance < nextAmount) {
+      return {
+        ok: false,
+        reason: `노코인이 부족합니다. 누적 예약 ${formatCoins(nextAmount)} / 현재 잔액 ${formatCoins(user.balance)}`,
+      };
+    }
+
+    return {
+      ok: true,
+      balance: user.balance,
+    };
+  });
+
+  if (!check.ok) {
+    await interaction.reply({
+      content: check.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (battleChallenges.get(challenge.id) !== challenge) {
+    await interaction.reply({
+      content: '이 결투 신청은 이미 시작되었거나 취소되어 관전 베팅할 수 없습니다.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const nowIso = new Date().toISOString();
+  challenge.spectatorBets = existingBets;
+  challenge.spectatorBets[interaction.user.id] = {
+    userId: interaction.user.id,
+    side,
+    amount: nextAmount,
+    createdAt: existing?.createdAt || nowIso,
+    updatedAt: nowIso,
+  };
+
+  await interaction.reply({
+    content: [
+      `<@${targetUserId}> 승에 ${formatCoins(amount)} 관전 베팅을 예약했습니다.`,
+      `내 누적 예약: ${formatCoins(nextAmount)}`,
+      '결투가 시작될 때 잔액이 충분하면 그때 차감되고 확정됩니다.',
+    ].join('\n'),
+    flags: MessageFlags.Ephemeral,
+  });
+  await updateBattleChallengeMessage(interaction, challenge);
   return true;
 }
 
@@ -5393,7 +5848,7 @@ async function handleBattleUiInteraction(interaction) {
     return false;
   }
 
-  if (!interaction.isButton() && !interaction.isStringSelectMenu()) {
+  if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) {
     return false;
   }
 
@@ -5423,6 +5878,14 @@ async function handleBattleUiInteraction(interaction) {
 
   if (interaction.isStringSelectMenu() && parsed.action === 'weapon') {
     return handleBattleWeaponSelect(interaction, parsed, challenge);
+  }
+
+  if (interaction.isButton() && parsed.action === 'sbet') {
+    return handleBattleSpectatorBetButton(interaction, parsed, challenge);
+  }
+
+  if (interaction.isModalSubmit() && parsed.action === 'sbetModal') {
+    return handleBattleSpectatorBetModal(interaction, parsed, challenge);
   }
 
   if (!interaction.isButton()) {
@@ -5507,6 +5970,10 @@ async function handleBattleUiInteraction(interaction) {
         opponentRecord.balance -= challenge.wager;
       }
 
+      const spectatorBetResult = collectBattleSpectatorBets(guild, challenge);
+      challenge.spectatorBets = spectatorBetResult.bets;
+      challenge.spectatorBetSkipped = spectatorBetResult.skipped;
+
       return {
         ok: true,
         session: createBattleSession(challenge, challengerRecord, opponentRecord),
@@ -5556,6 +6023,7 @@ async function settleBattleSession(session) {
     const loserDurabilityLoss = 6;
     const winnerItemsChanged = applyBattleDurabilityLoss(winner, winnerDurabilityLoss, session.weaponKeys?.[session.winnerId]);
     const loserItemsChanged = applyBattleDurabilityLoss(loser, loserDurabilityLoss, session.weaponKeys?.[session.loserId]);
+    const spectatorBetting = settleBattleSpectatorBets(guild, session);
 
     return {
       ok: true,
@@ -5571,6 +6039,7 @@ async function settleBattleSession(session) {
           winnerItemsChanged,
           loserItemsChanged,
         },
+        spectatorBetting,
       },
     };
   });
