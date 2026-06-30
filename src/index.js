@@ -4535,6 +4535,8 @@ async function handleStatus(interaction) {
     return;
   }
 
+  await interaction.deferReply();
+
   const target = interaction.options.getUser('유저') || interaction.user;
   const result = await store.run((data) => {
     const guild = store.ensureGuild(data, interaction.guildId);
@@ -4545,7 +4547,8 @@ async function handleStatus(interaction) {
   });
   const imageFile = createStatusCardFile(target, result.user);
 
-  await reply(interaction, {
+  await interaction.editReply({
+    content: `${target}님의 상태창`,
     files: [imageFile.attachment],
   });
 }
