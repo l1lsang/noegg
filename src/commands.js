@@ -208,6 +208,23 @@ function buildCommandData() {
       ),
 
     new SlashCommandBuilder()
+      .setName('아이템합성')
+      .setDescription('같은 등급 아이템 4개를 소모해 다음 등급 아이템 1개를 얻습니다.')
+      .addStringOption((option) =>
+        option
+          .setName('등급')
+          .setDescription('재료로 사용할 아이템 등급입니다.')
+          .setRequired(true)
+          .addChoices(
+            { name: '일반 -> 고급', value: 'common' },
+            { name: '고급 -> 희귀', value: 'uncommon' },
+            { name: '희귀 -> 영웅', value: 'rare' },
+            { name: '영웅 -> 전설', value: 'epic' },
+            { name: '전설 -> 신화', value: 'legendary' },
+          ),
+      ),
+
+    new SlashCommandBuilder()
       .setName('아이템강화')
       .setDescription('노코인을 사용해서 해금된 아이템 진화를 확률 강화합니다.')
       .addStringOption((option) =>

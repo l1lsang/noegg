@@ -83,6 +83,14 @@ const battleSessionTtlMs = 20 * 60 * 1000;
 const battleMaxTurns = 12;
 const pendingItemEnhancements = new Map();
 const itemEnhancementTtlMs = 5 * 60 * 1000;
+const itemSynthesisRequirement = 4;
+const itemSynthesisGradeSteps = [
+  { source: 'common', target: 'uncommon' },
+  { source: 'uncommon', target: 'rare' },
+  { source: 'rare', target: 'epic' },
+  { source: 'epic', target: 'legendary' },
+  { source: 'legendary', target: 'mythic' },
+];
 const shopGradePriceMultipliers = {
   common: 12,
   uncommon: 18,
@@ -1597,6 +1605,100 @@ function findInventoryItem(user, rawName) {
   return getInventoryItems(user).find((item) => item.key === wanted || normalizeKey(item.name) === wanted);
 }
 
+function getItemSynthesisStep(sourceGradeKey) {
+  return itemSynthesisGradeSteps.find((step) => step.source === sourceGradeKey) || null;
+}
+
+function getSynthesisMaterialItems(user, sourceGradeKey) {
+  return getInventoryItems(user)
+    .filter((item) => getItemGradeConfig(getItemEvolution(item.name).grade).key === sourceGradeKey)
+    .sort((a, b) =>
+      a.bestValue - b.bestValue
+      || a.count - b.count
+      || a.name.localeCompare(b.name, 'ko-KR')
+    );
+}
+
+function removeInventoryItemCount(user, item, count) {
+  const current = user.inventory?.[item.key];
+  const removeCount = Math.max(1, Math.floor(count));
+
+  if (current && typeof current === 'object') {
+    current.count = Math.max(0, Math.floor(current.count || 0) - removeCount);
+    if (current.count <= 0) {
+      delete user.inventory[item.key];
+    }
+    return;
+  }
+
+  if (Number.isFinite(current)) {
+    const remaining = Math.max(0, Math.floor(current) - removeCount);
+    if (remaining > 0) {
+      user.inventory[item.key] = remaining;
+    } else {
+      delete user.inventory[item.key];
+    }
+  }
+}
+
+function consumeSynthesisMaterials(user, sourceGradeKey) {
+  const materialItems = getSynthesisMaterialItems(user, sourceGradeKey);
+  const available = materialItems.reduce((sum, item) => sum + item.count, 0);
+  if (available < itemSynthesisRequirement) {
+    return {
+      ok: false,
+      consumed: [],
+      missing: itemSynthesisRequirement - available,
+      available,
+    };
+  }
+
+  let remaining = itemSynthesisRequirement;
+  const consumed = [];
+
+  for (const item of materialItems) {
+    if (remaining <= 0) {
+      break;
+    }
+
+    const count = Math.min(item.count, remaining);
+    removeInventoryItemCount(user, item, count);
+    consumed.push({
+      name: item.name,
+      count,
+    });
+    remaining -= count;
+  }
+
+  return {
+    ok: remaining <= 0,
+    consumed,
+    missing: Math.max(0, remaining),
+    available,
+  };
+}
+
+function pickSynthesisRewardItem(targetGradeKey) {
+  const candidates = listFishingItems(economyMultiplier)
+    .filter((item) => item.grade.key === targetGradeKey);
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const totalWeight = candidates.reduce((sum, item) => sum + item.weight, 0);
+  let roll = Math.random() * totalWeight;
+
+  for (const item of candidates) {
+    roll -= item.weight;
+    if (roll <= 0) {
+      return item;
+    }
+  }
+
+  return candidates[candidates.length - 1];
+}
+
 function getItemPowerGain(item) {
   const value = Math.max(1, item.bestValue || Math.floor((item.totalValue || 0) / Math.max(1, item.count)));
   const tier = Math.max(1, Math.floor(Math.sqrt(value) / 10));
@@ -1959,6 +2061,23 @@ function createItemPurchaseEmbed({ user, item, quantity, totalCost, balance, inv
   }
 
   return embed;
+}
+
+function createItemSynthesisEmbed({ user, sourceGrade, targetGrade, consumed, rewardItem, inventoryItem }) {
+  const consumedLines = consumed
+    .map((item) => `${item.name} x${item.count}`)
+    .join('\n');
+
+  return createUiEmbed({
+    color: getItemGradeColor(targetGrade, uiTheme.colors.success),
+    title: '아이템 합성 완료',
+    description: `${user}님이 ${formatItemGradeLabel(sourceGrade)} 아이템 ${itemSynthesisRequirement}개를 합성해 **${formatItemGradeLabel(targetGrade)} ${rewardItem.name}** 1개를 얻었습니다.`,
+  })
+    .addFields(
+      { name: '소모 재료', value: truncateText(consumedLines, 1024), inline: false },
+      { name: '획득 아이템', value: `${rewardItem.name} x${inventoryItem?.count || 1}`, inline: true },
+      { name: '합성 단계', value: `${sourceGrade.label} -> ${targetGrade.label}`, inline: true },
+    );
 }
 
 function createItemRepairEmbed({ user, evolution, cost, balance, previousDurability, nextDurability }) {
@@ -3304,6 +3423,7 @@ async function handleHelp(interaction) {
         ['/보관함', '낚시 아이템 목록'],
         ['/상태', '내구도와 다음 강화 확률'],
         ['/아이템사용', '아이템으로 유저 진화'],
+        ['/아이템합성', '4개로 다음 등급 아이템 합성'],
         ['/아이템강화', '노코인으로 강화 도전'],
         ['/아이템확률', '등급별 낚시 확률'],
         ['/아이템구매', '상점 아이템 구매'],
@@ -3763,6 +3883,82 @@ async function handleBuyItem(interaction) {
         balance: result.balance,
         inventoryItem: result.inventoryItem,
         protectionTickets: result.protectionTickets,
+      }),
+    ],
+  });
+}
+
+async function handleSynthesizeItem(interaction) {
+  if (!(await requireGuild(interaction))) {
+    return;
+  }
+
+  const sourceGradeKey = interaction.options.getString('등급', true);
+  const result = await store.run((data) => {
+    const guild = store.ensureGuild(data, interaction.guildId);
+    const user = store.ensureUser(guild, interaction.user);
+    const step = getItemSynthesisStep(sourceGradeKey);
+
+    if (!step) {
+      return {
+        ok: false,
+        reason: '합성할 수 없는 등급입니다.',
+      };
+    }
+
+    const sourceGrade = getItemGradeConfig(step.source);
+    const targetGrade = getItemGradeConfig(step.target);
+    const rewardItem = pickSynthesisRewardItem(step.target);
+    if (!rewardItem) {
+      return {
+        ok: false,
+        reason: `${formatItemGradeLabel(targetGrade)} 합성 결과 아이템을 찾을 수 없습니다.`,
+      };
+    }
+
+    const consumed = consumeSynthesisMaterials(user, step.source);
+    if (!consumed.ok) {
+      return {
+        ok: false,
+        reason: `${formatItemGradeLabel(sourceGrade)} 아이템이 부족합니다. 필요 ${itemSynthesisRequirement}개 / 현재 ${consumed.available || 0}개`,
+      };
+    }
+
+    const inventoryItem = addInventoryItem(user, {
+      label: rewardItem.name,
+      amount: rewardItem.averageAmount,
+      baseAmount: rewardItem.averageBaseAmount,
+      weight: rewardItem.weight,
+    });
+    user.stats.itemSynthesisCount = (user.stats.itemSynthesisCount || 0) + 1;
+
+    return {
+      ok: true,
+      sourceGrade,
+      targetGrade,
+      consumed: consumed.consumed,
+      rewardItem,
+      inventoryItem,
+    };
+  });
+
+  if (!result.ok) {
+    await reply(interaction, {
+      content: result.reason,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await reply(interaction, {
+    embeds: [
+      createItemSynthesisEmbed({
+        user: interaction.user,
+        sourceGrade: result.sourceGrade,
+        targetGrade: result.targetGrade,
+        consumed: result.consumed,
+        rewardItem: result.rewardItem,
+        inventoryItem: result.inventoryItem,
       }),
     ],
   });
@@ -6050,6 +6246,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case '아이템사용':
         await handleUseItem(interaction);
+        break;
+      case '아이템합성':
+        await handleSynthesizeItem(interaction);
         break;
       case '아이템강화':
         await handleEnhanceItem(interaction);
