@@ -19,11 +19,11 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('도움말')
-      .setDescription('노코인 게임봇 명령어를 확인합니다.'),
+      .setDescription('코인 게임봇 명령어를 확인합니다.'),
 
     new SlashCommandBuilder()
       .setName('지갑')
-      .setDescription('노코인 잔액을 확인합니다.')
+      .setDescription('코인 잔액을 확인합니다.')
       .addUserOption((option) =>
         option
           .setName('유저')
@@ -37,7 +37,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('랭킹')
-      .setDescription('서버 노코인 게임 랭킹을 확인합니다.')
+      .setDescription('서버 코인 게임 랭킹을 확인합니다.')
       .addStringOption((option) =>
         option
           .setName('기준')
@@ -57,7 +57,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('복권')
-      .setDescription('노코인을 걸고 복권을 긁습니다.')
+      .setDescription('코인을 걸고 복권을 긁습니다.')
       .addIntegerOption((option) =>
         option
           .setName('금액')
@@ -68,17 +68,17 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('지급')
-      .setDescription('봇 오너가 유저에게 노코인을 지급합니다.')
+      .setDescription('봇 오너가 유저에게 코인을 지급합니다.')
       .addUserOption((option) =>
         option
           .setName('유저')
-          .setDescription('노코인을 받을 유저입니다.')
+          .setDescription('코인을 받을 유저입니다.')
           .setRequired(true),
       )
       .addIntegerOption((option) =>
         option
           .setName('금액')
-          .setDescription('지급할 노코인 금액입니다.')
+          .setDescription('지급할 코인 금액입니다.')
           .setRequired(true)
           .setMinValue(1)
           .setMaxValue(1000000000),
@@ -126,7 +126,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('베팅')
-      .setDescription('노코인을 걸고 베팅에 참여합니다.')
+      .setDescription('코인을 걸고 베팅에 참여합니다.')
       .addStringOption((option) =>
         option
           .setName('베팅id')
@@ -144,7 +144,7 @@ function buildCommandData() {
       .addIntegerOption((option) =>
         option
           .setName('금액')
-          .setDescription('베팅할 노코인 금액입니다.')
+          .setDescription('베팅할 코인 금액입니다.')
           .setRequired(true)
           .setMinValue(1),
       ),
@@ -169,7 +169,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('낚시')
-      .setDescription('낚시를 해서 노코인을 얻습니다.'),
+      .setDescription('낚시를 해서 코인을 얻습니다.'),
 
     new SlashCommandBuilder()
       .setName('보관함')
@@ -211,7 +211,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('아이템합성')
-      .setDescription('등급별 레시피와 노코인을 소모해 다음 등급 랜덤 아이템 1개를 얻습니다.')
+      .setDescription('등급별 레시피와 코인을 소모해 다음 등급 랜덤 아이템 1개를 얻습니다.')
       .addStringOption((option) =>
         option
           .setName('등급')
@@ -228,7 +228,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('아이템강화')
-      .setDescription('노코인을 사용해서 해금된 아이템 진화를 확률 강화합니다.')
+      .setDescription('코인을 사용해서 해금된 아이템 진화를 확률 강화합니다.')
       .addStringOption((option) =>
         option
           .setName('아이템')
@@ -244,7 +244,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('상점')
-      .setDescription('노코인으로 살 수 있는 아이템 목록을 확인합니다.'),
+      .setDescription('코인으로 살 수 있는 아이템 목록을 확인합니다.'),
 
     new SlashCommandBuilder()
       .setName('방어구')
@@ -252,7 +252,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('방어구뽑기')
-      .setDescription('노코인으로 방어구를 뽑습니다.')
+      .setDescription('코인으로 방어구를 뽑습니다.')
       .addIntegerOption((option) =>
         option
           .setName('수량')
@@ -264,7 +264,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('방어구합성')
-      .setDescription('방어구 조각과 노코인을 소모해 상위 등급 방어구를 만듭니다.')
+      .setDescription('방어구 조각과 코인을 소모해 상위 등급 방어구를 만듭니다.')
       .addStringOption((option) =>
         option
           .setName('목표등급')
@@ -313,7 +313,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('결투')
-      .setDescription('상대에게 결투를 신청하고 노코인을 걸 수 있습니다.')
+      .setDescription('상대에게 결투를 신청하고 코인을 걸 수 있습니다.')
       .addUserOption((option) =>
         option
           .setName('상대')
@@ -323,18 +323,18 @@ function buildCommandData() {
       .addIntegerOption((option) =>
         option
           .setName('금액')
-          .setDescription('각자 걸 노코인 금액입니다. 생략하면 코인 없이 싸웁니다.')
+          .setDescription('각자 걸 코인 금액입니다. 생략하면 코인 없이 싸웁니다.')
           .setRequired(false)
           .setMinValue(0),
       ),
 
     new SlashCommandBuilder()
       .setName('구걸')
-      .setDescription('구걸을 해서 노코인을 얻습니다.'),
+      .setDescription('구걸을 해서 코인을 얻습니다.'),
 
     new SlashCommandBuilder()
       .setName('동전던지기')
-      .setDescription('앞면 또는 뒷면에 노코인을 겁니다.')
+      .setDescription('앞면 또는 뒷면에 코인을 겁니다.')
       .addStringOption((option) =>
         option
           .setName('선택')
@@ -348,7 +348,7 @@ function buildCommandData() {
       .addIntegerOption((option) =>
         option
           .setName('금액')
-          .setDescription('걸 노코인 금액입니다. 맞히면 2배를 돌려받습니다.')
+          .setDescription('걸 코인 금액입니다. 맞히면 2배를 돌려받습니다.')
           .setRequired(true)
           .setMinValue(1),
       ),
@@ -367,14 +367,14 @@ function buildCommandData() {
       .addIntegerOption((option) =>
         option
           .setName('금액')
-          .setDescription('걸 노코인 금액입니다. 맞히면 6배를 돌려받습니다.')
+          .setDescription('걸 코인 금액입니다. 맞히면 6배를 돌려받습니다.')
           .setRequired(true)
           .setMinValue(1),
       ),
 
     new SlashCommandBuilder()
       .setName('배치')
-      .setDescription('롤 배치고사 확률표대로 노코인을 겁니다. 큰 손실이 날 수 있습니다.')
+      .setDescription('롤 배치고사 확률표대로 코인을 겁니다. 큰 손실이 날 수 있습니다.')
       .addIntegerOption((option) =>
         option
           .setName('금액')
@@ -404,7 +404,7 @@ function buildCommandData() {
       .addIntegerOption((option) =>
         option
           .setName('금액')
-          .setDescription('걸 노코인 금액입니다. 맞히면 3배를 돌려받습니다.')
+          .setDescription('걸 코인 금액입니다. 맞히면 3배를 돌려받습니다.')
           .setRequired(true)
           .setMinValue(1),
       ),
@@ -415,7 +415,7 @@ function buildCommandData() {
       .addIntegerOption((option) =>
         option
           .setName('금액')
-          .setDescription('걸 노코인 금액입니다.')
+          .setDescription('걸 코인 금액입니다.')
           .setRequired(true)
           .setMinValue(1),
       ),
@@ -433,7 +433,7 @@ function buildCommandData() {
 
     new SlashCommandBuilder()
       .setName('폴리마켓생성')
-      .setDescription('Polymarket 시장 정보로 노코인 베팅을 생성합니다.')
+      .setDescription('Polymarket 시장 정보로 코인 베팅을 생성합니다.')
       .addStringOption((option) =>
         option
           .setName('시장id')

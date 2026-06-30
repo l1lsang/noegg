@@ -1,5 +1,5 @@
 function formatCoins(amount) {
-  return `${Math.floor(amount).toLocaleString('ko-KR')} 노코인`;
+  return `${Math.floor(amount).toLocaleString('ko-KR')} 코인`;
 }
 
 function formatRemaining(ms) {
@@ -421,7 +421,7 @@ const BEGGING_TABLE = [
   { text: '지나가던 사람이 잔돈을 건넸습니다(정말 구걸하는 사람처럼 생겼군요).', min: 15, max: 80, weight: 45 },
   { text: '편의점 앞에서 뜻밖의 후원을 받았습니다(세냥보다 잘생겨서 받은듯).', min: 60, max: 160, weight: 28 },
   { text: '아무도 관심을 주지 않았습니다(초야와 섹스하면 관심받을 수도?).', min: 0, max: 0, weight: 22 },
-  { text: '노코인 부자가 크게 베풀었습니다(우흥~).', min: 250, max: 500, weight: 5 },
+  { text: '코인 부자가 크게 베풀었습니다(우흥~).', min: 250, max: 500, weight: 5 },
 ];
 
 function fishReward(multiplier = 1) {
@@ -480,7 +480,7 @@ function getItemEvolution(itemName) {
     stance: '낚시 아이템의 기운을 몸에 두릅니다.',
     attack: '즉흥 타격',
     motion: '아이템의 무게를 이용해 정면으로 밀어붙입니다.',
-    ultimate: '노코인 폭발',
+    ultimate: '코인 폭발',
     ultimateMotion: '모은 기운을 한 번에 터뜨립니다.',
     grade: 'common',
     statBias: { attack: 1, defense: 1, luck: 1 },

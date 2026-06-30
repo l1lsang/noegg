@@ -351,7 +351,7 @@ function progressBar(value, total, size = 12) {
 }
 
 const uiTheme = {
-  footer: '노코인 게임봇',
+  footer: '코인 게임봇',
   colors: {
     primary: 0x5865f2,
     success: 0x57f287,
@@ -833,7 +833,7 @@ function createPlacementExamOddsSvg() {
       <circle cx="1000" cy="120" r="220" fill="#2563eb" opacity="0.12"/>
       <circle cx="120" cy="760" r="260" fill="#f59e0b" opacity="0.08"/>
 
-      <text x="54" y="64" class="eyebrow">NOCOIN PLACEMENT</text>
+      <text x="54" y="64" class="eyebrow">COIN PLACEMENT</text>
       <text x="54" y="126" class="title">롤 배치고사 확률표</text>
       <text x="54" y="162" class="subtitle">보상은 순손익 기준입니다. 손실 티어는 잔액이 마이너스가 될 수 있습니다.</text>
 
@@ -1333,6 +1333,11 @@ function compactNumber(value) {
   return `${number}`;
 }
 
+function formatStatusCoins(amount) {
+  const full = formatCoins(amount);
+  return full.length > 15 ? `${compactNumber(amount)} 코인` : full;
+}
+
 function toAsciiText(value, fallback = 'ITEM') {
   const text = String(value || '')
     .replace(/[^\x20-\x7e]+/g, ' ')
@@ -1528,6 +1533,9 @@ function createStatusCardFile(target, user) {
   const activeArmorText = activeArmor
     ? `${activeArmor.grade.label} ${activeArmor.profile.label} / 회피 ${formatChance(activeArmor.profile.evasion)}`
     : '방어구 없음';
+  const statusBalanceText = formatStatusCoins(user.balance || 0);
+  const battleProfitText = formatStatusCoins(stats.battleProfit || 0);
+  const enhanceSpentText = formatStatusCoins(stats.itemEnhanceSpent || 0);
   const nextTarget = evolutions[0];
   const nextAction = nextTarget
     ? `/아이템강화 아이템:${nextTarget.itemName}`
@@ -1596,6 +1604,7 @@ function createStatusCardFile(target, user) {
         .subtitle { font-size: 26px; fill: #dbeafe; font-weight: 600; }
         .card-label { font-size: 24px; fill: #9ca3af; font-weight: 800; }
         .card-value { font-size: 38px; fill: #f8fafc; font-weight: 900; }
+        .card-value-wide { font-size: 34px; fill: #f8fafc; font-weight: 900; }
         .section-title { font-size: 34px; fill: #f8fafc; font-weight: 900; }
         .small-label { font-size: 28px; fill: #cbd5e1; font-weight: 800; }
         .metric-number { font-size: 31px; fill: #f8fafc; font-weight: 900; }
@@ -1607,28 +1616,25 @@ function createStatusCardFile(target, user) {
         .tiny { font-size: 20px; fill: #94a3b8; font-weight: 500; }
       </style>
       <rect width="${width}" height="${height}" fill="url(#status-bg)"/>
-      <circle cx="1080" cy="134" r="260" fill="#2563eb" opacity="0.12"/>
-      <circle cx="90" cy="1420" r="300" fill="#f59e0b" opacity="0.08"/>
-
       <rect x="48" y="48" width="1184" height="210" rx="34" fill="url(#hero)" filter="url(#shadow)"/>
-      <text x="88" y="106" class="eyebrow">NOCOIN STATUS</text>
+      <text x="88" y="106" class="eyebrow">COIN STATUS</text>
       <text x="88" y="176" class="title">${escapeSvgText(displayName)}님의 상태</text>
       <text x="88" y="222" class="subtitle">${escapeSvgText(activeText)}</text>
 
       <g filter="url(#shadow)">
-        <rect x="48" y="302" width="270" height="132" rx="26" fill="#111827" stroke="#293447"/>
-        <rect x="348" y="302" width="270" height="132" rx="26" fill="#111827" stroke="#293447"/>
-        <rect x="648" y="302" width="270" height="132" rx="26" fill="#111827" stroke="#293447"/>
-        <rect x="948" y="302" width="284" height="132" rx="26" fill="#111827" stroke="#293447"/>
+        <rect x="48" y="302" width="398" height="132" rx="24" fill="#111827" stroke="#293447"/>
+        <rect x="474" y="302" width="222" height="132" rx="24" fill="#111827" stroke="#293447"/>
+        <rect x="724" y="302" width="222" height="132" rx="24" fill="#111827" stroke="#293447"/>
+        <rect x="974" y="302" width="258" height="132" rx="24" fill="#111827" stroke="#293447"/>
       </g>
       <text x="78" y="354" class="card-label">잔액</text>
-      <text x="78" y="404" class="card-value">${escapeSvgText(formatCoins(user.balance || 0))}</text>
-      <text x="378" y="354" class="card-label">전투력</text>
-      <text x="378" y="404" class="card-value">${escapeSvgText(`${score}점`)}</text>
-      <text x="678" y="354" class="card-label">진화 무기</text>
-      <text x="678" y="404" class="card-value">${activeEvolutions.length}/${evolutions.length}개</text>
-      <text x="978" y="354" class="card-label">방지권</text>
-      <text x="978" y="404" class="card-value">${user.protectionTickets || 0}장</text>
+      <text x="78" y="404" class="card-value-wide">${escapeSvgText(statusBalanceText)}</text>
+      <text x="504" y="354" class="card-label">전투력</text>
+      <text x="504" y="404" class="card-value">${escapeSvgText(`${score}점`)}</text>
+      <text x="754" y="354" class="card-label">진화 무기</text>
+      <text x="754" y="404" class="card-value">${activeEvolutions.length}/${evolutions.length}개</text>
+      <text x="1004" y="354" class="card-label">방지권</text>
+      <text x="1004" y="404" class="card-value">${user.protectionTickets || 0}장</text>
 
       <rect x="48" y="482" width="584" height="334" rx="30" fill="#111827" stroke="#293447" filter="url(#shadow)"/>
       <text x="84" y="532" class="section-title">대표 무기와 스탯</text>
@@ -1641,8 +1647,8 @@ function createStatusCardFile(target, user) {
       <rect x="708" y="574" width="${Math.max(6, Math.floor(408 * durabilityRatio))}" height="34" rx="17" fill="${durabilityRatio > 0.35 ? '#34d399' : '#ef4444'}"/>
       <text x="1134" y="603" class="metric-number">${Math.round(durabilityRatio * 100)}%</text>
       <text x="708" y="666" class="body">${escapeSvgText(`전체 내구도 ${totalDurability}/${maxDurability || 0}`)}</text>
-      <text x="708" y="716" class="body-muted">${escapeSvgText(`결투 ${stats.battlesWon || 0}승 ${stats.battlesLost || 0}패 / 수익 ${formatCoins(stats.battleProfit || 0)}`)}</text>
-      <text x="708" y="762" class="body-muted">${escapeSvgText(`강화 ${stats.itemEnhanceSuccesses || 0}/${stats.itemEnhanceAttempts || 0} 성공 / 사용 ${formatCoins(stats.itemEnhanceSpent || 0)}`)}</text>
+      <text x="708" y="716" class="body-muted">${escapeSvgText(`결투 ${stats.battlesWon || 0}승 ${stats.battlesLost || 0}패 / 수익 ${battleProfitText}`)}</text>
+      <text x="708" y="762" class="body-muted">${escapeSvgText(`강화 ${stats.itemEnhanceSuccesses || 0}/${stats.itemEnhanceAttempts || 0} 성공 / 사용 ${enhanceSpentText}`)}</text>
       <text x="708" y="806" class="body-muted">${escapeSvgText(`방어구 ${activeArmorText}`)}</text>
 
       <rect x="48" y="872" width="1184" height="610" rx="30" fill="#0f172a" stroke="#293447" filter="url(#shadow)"/>
@@ -3431,7 +3437,7 @@ function createArmorDrawEmbed({ user, results, totalCost, balance }) {
     description: `${user}님이 방어구 ${results.length}개를 뽑았습니다.`,
   }).addFields(
     { name: '획득', value: lines || '획득 없음', inline: false },
-    { name: '소모 노코인', value: formatCoins(totalCost), inline: true },
+    { name: '소모 코인', value: formatCoins(totalCost), inline: true },
     { name: '남은 잔액', value: formatCoins(balance), inline: true },
   );
 }
@@ -3445,7 +3451,7 @@ function createArmorSynthesisEmbed({ user, recipe, armor, cost, balance }) {
   }).addFields(
     { name: '소모 레시피', value: formatMaterialRequirements(recipe.materials), inline: false },
     { name: '장착 효과', value: formatArmorEffect(armor), inline: false },
-    { name: '소모 노코인', value: formatCoins(cost), inline: true },
+    { name: '소모 코인', value: formatCoins(cost), inline: true },
     { name: '남은 잔액', value: formatCoins(balance), inline: true },
   );
 }
@@ -3485,7 +3491,7 @@ function createItemSynthesisEmbed({ user, sourceGrade, targetGrade, consumed, re
       { name: '소모 재료', value: truncateText(consumedLines, 1024), inline: false },
       { name: '획득 아이템', value: `${rewardItem.name} x${inventoryItem?.count || 1}`, inline: true },
       { name: '합성 단계', value: `${sourceGrade.label} -> ${targetGrade.label}`, inline: true },
-      { name: '소모 노코인', value: formatCoins(cost), inline: true },
+      { name: '소모 코인', value: formatCoins(cost), inline: true },
       { name: '남은 잔액', value: formatCoins(balance), inline: true },
     );
 }
@@ -3620,7 +3626,7 @@ function createItemEnhanceEmbed({
     .addFields(
       { name: '결과', value: resultText, inline: true },
       { name: '도전 확률', value: formatEnhancementRates(displayRates), inline: false },
-      { name: '소모 노코인', value: formatCoins(cost), inline: true },
+      { name: '소모 코인', value: formatCoins(cost), inline: true },
       { name: '보유 상태', value: `잔액 ${formatCoins(balance)}\n방지권 ${protectionTickets || 0}장`, inline: false },
     );
 
@@ -4169,7 +4175,7 @@ function createBetEmbed(bet) {
       `시장 ID: \`${bet.source.marketId}\``,
       bet.source.url ? `[Polymarket에서 보기](${bet.source.url})` : null,
       sourceEndDate ? `종료 예정: <t:${sourceEndDate}:R>` : null,
-      '실제 주문이 아닌 노코인 모의 베팅입니다.',
+      '실제 주문이 아닌 코인 모의 베팅입니다.',
     ].filter(Boolean);
 
     embed.addFields({
@@ -4225,7 +4231,7 @@ function createPolymarketMarketEmbed(market, charts = [], chartFileName = null) 
         inline: false,
       },
     )
-    .setFooter({ text: `${uiTheme.footer} · 노코인 모의 베팅용 정보` });
+    .setFooter({ text: `${uiTheme.footer} · 코인 모의 베팅용 정보` });
 
   if (chartFileName) {
     embed.setImage(`attachment://${chartFileName}`);
@@ -4276,7 +4282,7 @@ function createPolymarketSearchComponents(markets) {
     new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId(polymarketCustomId('select'))
-        .setPlaceholder('노코인 베팅으로 만들 시장 선택')
+        .setPlaceholder('코인 베팅으로 만들 시장 선택')
         .addOptions(
           markets.map((market, index) => ({
             label: truncateText(`${index + 1}. ${market.question}`, 100),
@@ -4293,7 +4299,7 @@ function createPolymarketMarketComponents(market) {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(polymarketCustomId('create', market.id))
-        .setLabel('노코인 베팅 생성')
+        .setLabel('코인 베팅 생성')
         .setStyle(ButtonStyle.Success)
         .setDisabled(!market.active || market.closed || market.outcomes.length < 2),
     ),
@@ -4486,7 +4492,7 @@ async function settleInstantGamble({ guildId, discordUser, wager, multiplier, di
     if (user.balance < wager) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
@@ -4797,7 +4803,7 @@ async function placeBet({ guildId, discordUser, betId, optionName, optionIndex, 
     if (user.balance < wagerAmount) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
@@ -4903,11 +4909,11 @@ async function handleHelp(interaction) {
     {
       name: '경제',
       value: formatCommandList([
-        ['/지갑', '노코인과 성장 상태 확인'],
+        ['/지갑', '코인과 성장 상태 확인'],
         ['/파산신청', '30분마다 빚 0으로 정리'],
-        ['/지급', '봇 오너 노코인 지급'],
-        ['/낚시', '아이템과 노코인 획득'],
-        ['/구걸', '5분마다 노코인 획득'],
+        ['/지급', '봇 오너 코인 지급'],
+        ['/낚시', '아이템과 코인 획득'],
+        ['/구걸', '5분마다 코인 획득'],
         ['/출석', '하루 한 번 출석 보상'],
         ['/랭킹', '잔액/전투력/강화/낚시 순위'],
         ['/상점', '비싼 아이템 구매 목록'],
@@ -4922,12 +4928,12 @@ async function handleHelp(interaction) {
         ['/상태', '내구도와 다음 강화 확률'],
         ['/아이템사용', '아이템으로 유저 진화'],
         ['/아이템합성', '레시피로 다음 등급 랜덤 합성'],
-        ['/아이템강화', '노코인으로 강화 도전'],
+        ['/아이템강화', '코인으로 강화 도전'],
         ['/아이템확률', '등급별 낚시 확률'],
         ['/아이템구매', '상점 아이템 구매'],
         ['/아이템수리', '진화 아이템 내구도 회복'],
         ['/방어구', '자동 장착 방어구 확인'],
-        ['/방어구뽑기', '노코인 방어구 뽑기'],
+        ['/방어구뽑기', '코인 방어구 뽑기'],
         ['/방어구합성', '방어구 조각 합성'],
       ]),
       inline: false,
@@ -4938,7 +4944,7 @@ async function handleHelp(interaction) {
         ['/베팅생성', '서버 베팅 생성'],
         ['/베팅목록', '진행 중인 베팅'],
         ['/베팅정보', '베팅 상세 UI'],
-        ['/베팅', '노코인 걸기'],
+        ['/베팅', '코인 걸기'],
         ['/베팅종료', '정답 선택 후 정산'],
         ['/폴리마켓검색', 'Polymarket 시장 검색'],
         ['/폴리마켓생성', '시장 ID로 베팅 생성'],
@@ -4996,7 +5002,7 @@ async function handleWallet(interaction) {
   const embed = createUiEmbed({
     color: uiTheme.colors.economy,
     title: `${getDisplayName(target)}님의 지갑`,
-    description: `${target}님의 노코인 현황`,
+    description: `${target}님의 코인 현황`,
   })
     .addFields(
       { name: '잔액', value: formatCoins(result.balance), inline: true },
@@ -5229,7 +5235,7 @@ async function handleLottery(interaction) {
     if (user.balance < wager) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
@@ -5289,7 +5295,7 @@ async function handleGrant(interaction) {
 
   if (!ownerIds.has(interaction.user.id)) {
     await reply(interaction, {
-      content: '노코인 지급은 BOT_OWNER_IDS에 등록된 봇 오너만 사용할 수 있습니다.',
+      content: '코인 지급은 BOT_OWNER_IDS에 등록된 봇 오너만 사용할 수 있습니다.',
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -5301,7 +5307,7 @@ async function handleGrant(interaction) {
 
   if (target.bot) {
     await reply(interaction, {
-      content: '봇에게는 노코인을 지급할 수 없습니다.',
+      content: '봇에게는 코인을 지급할 수 없습니다.',
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -5320,7 +5326,7 @@ async function handleGrant(interaction) {
 
   const embed = createUiEmbed({
     color: uiTheme.colors.success,
-    title: '노코인 지급 완료',
+    title: '코인 지급 완료',
   })
     .addFields(
       { name: '대상', value: `${target}`, inline: true },
@@ -5440,7 +5446,7 @@ async function handleArmorDraw(interaction) {
     if (user.balance < totalCost) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 필요: ${formatCoins(totalCost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 필요: ${formatCoins(totalCost)} / 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
@@ -5511,7 +5517,7 @@ async function handleArmorSynthesis(interaction) {
     if (user.balance < cost) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
@@ -5585,7 +5591,7 @@ async function handleBuyItem(interaction) {
     if (user.balance < totalCost) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 필요: ${formatCoins(totalCost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 필요: ${formatCoins(totalCost)} / 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
@@ -5667,7 +5673,7 @@ async function handleSynthesizeItem(interaction) {
     if (user.balance < cost) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
@@ -5770,7 +5776,7 @@ async function handleRepairItem(interaction) {
     if (user.balance < cost) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
@@ -5983,7 +5989,7 @@ async function handleEnhanceItem(interaction) {
     if (user.balance < cost) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
@@ -6116,7 +6122,7 @@ async function handleItemEnhanceUiInteraction(interaction) {
     if (user.balance < cost) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 필요: ${formatCoins(cost)} / 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
@@ -6285,14 +6291,14 @@ async function handleBattle(interaction) {
     if (wager > 0 && challengerRecord.balance < wager) {
       return {
         ok: false,
-        reason: `신청자의 노코인이 부족합니다. 현재 잔액: ${formatCoins(challengerRecord.balance)}`,
+        reason: `신청자의 코인이 부족합니다. 현재 잔액: ${formatCoins(challengerRecord.balance)}`,
       };
     }
 
     if (wager > 0 && opponentRecord.balance < wager) {
       return {
         ok: false,
-        reason: `상대의 노코인이 부족합니다. 상대 잔액: ${formatCoins(opponentRecord.balance)}`,
+        reason: `상대의 코인이 부족합니다. 상대 잔액: ${formatCoins(opponentRecord.balance)}`,
       };
     }
 
@@ -6552,7 +6558,7 @@ async function handleBattleSpectatorBetModal(interaction, parsed, challenge) {
     if (user.balance < nextAmount) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 누적 예약 ${formatCoins(nextAmount)} / 현재 잔액 ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 누적 예약 ${formatCoins(nextAmount)} / 현재 잔액 ${formatCoins(user.balance)}`,
       };
     }
 
@@ -6726,14 +6732,14 @@ async function handleBattleUiInteraction(interaction) {
       if (challenge.wager > 0 && challengerRecord.balance < challenge.wager) {
         return {
           ok: false,
-          reason: `신청자의 노코인이 부족해서 결투가 취소되었습니다. 현재 잔액: ${formatCoins(challengerRecord.balance)}`,
+          reason: `신청자의 코인이 부족해서 결투가 취소되었습니다. 현재 잔액: ${formatCoins(challengerRecord.balance)}`,
         };
       }
 
       if (challenge.wager > 0 && opponentRecord.balance < challenge.wager) {
         return {
           ok: false,
-          reason: `상대의 노코인이 부족해서 결투가 취소되었습니다. 현재 잔액: ${formatCoins(opponentRecord.balance)}`,
+          reason: `상대의 코인이 부족해서 결투가 취소되었습니다. 현재 잔액: ${formatCoins(opponentRecord.balance)}`,
         };
       }
 
@@ -7335,8 +7341,8 @@ async function handlePolymarketCreate(interaction) {
 
   await reply(interaction, {
     content: result.created
-      ? `Polymarket 시장으로 노코인 베팅 ${result.bet.id}을 만들었습니다.`
-      : `이미 열린 노코인 베팅 ${result.bet.id}이 있습니다.`,
+      ? `Polymarket 시장으로 코인 베팅 ${result.bet.id}을 만들었습니다.`
+      : `이미 열린 코인 베팅 ${result.bet.id}이 있습니다.`,
     embeds: [createBetEmbed(result.bet), marketView.embed],
     files: marketView.files,
     components: createBetComponents(result.bet),
@@ -7387,8 +7393,8 @@ async function handlePolymarketCreateButton(interaction, parsed) {
 
   await reply(interaction, {
     content: result.created
-      ? `Polymarket 시장으로 노코인 베팅 ${result.bet.id}을 만들었습니다.`
-      : `이미 열린 노코인 베팅 ${result.bet.id}이 있습니다.`,
+      ? `Polymarket 시장으로 코인 베팅 ${result.bet.id}을 만들었습니다.`
+      : `이미 열린 코인 베팅 ${result.bet.id}이 있습니다.`,
     embeds: [createBetEmbed(result.bet), marketView.embed],
     files: marketView.files,
     components: createBetComponents(result.bet),
@@ -7971,7 +7977,7 @@ async function handleBlackjack(interaction) {
     if (user.balance < wager) {
       return {
         ok: false,
-        reason: `노코인이 부족합니다. 현재 잔액: ${formatCoins(user.balance)}`,
+        reason: `코인이 부족합니다. 현재 잔액: ${formatCoins(user.balance)}`,
       };
     }
 
