@@ -57,6 +57,11 @@ const ownerIds = new Set(config.ownerIds);
 const economyMultiplier = Math.max(1, Math.floor(config.economyMultiplier || 1));
 const quickBetAmounts = [100, 500, 1000].map((amount) => amount * economyMultiplier);
 const koreaTimeZone = 'Asia/Seoul';
+const casinoWinChances = {
+  coinFlip: 0.48,
+  dice: 0.15,
+  waterGun: 0.3,
+};
 const waterGunContestants = [
   {
     key: 'choya',
@@ -453,15 +458,28 @@ function getAttendanceReward(streak) {
   return Math.floor((1000 + streakBonus) * economyMultiplier);
 }
 
+const lotteryTiers = [
+  { threshold: 0.0075, label: '대박', multiplier: 20, color: uiTheme.colors.success },
+  { threshold: 0.0475, label: '큰 당첨', multiplier: 5, color: uiTheme.colors.success },
+  { threshold: 0.1975, label: '당첨', multiplier: 2, color: uiTheme.colors.economy },
+  { threshold: 0.3975, label: '본전', multiplier: 1, color: uiTheme.colors.warning },
+];
+
+function getLotteryTierChance(tier, index) {
+  const previousThreshold = index > 0 ? lotteryTiers[index - 1].threshold : 0;
+  return tier.threshold - previousThreshold;
+}
+
+function formatLotteryOdds() {
+  const tierLines = lotteryTiers
+    .map((tier, index) => `${tier.label} ${formatChance(getLotteryTierChance(tier, index))} (${tier.multiplier}배)`);
+  const missChance = 1 - lotteryTiers[lotteryTiers.length - 1].threshold;
+  return [...tierLines, `꽝 ${formatChance(missChance)} (0배)`].join('\n');
+}
+
 function drawLottery(wager) {
   const roll = Math.random();
-  const tiers = [
-    { threshold: 0.01, label: '대박', multiplier: 20, color: uiTheme.colors.success },
-    { threshold: 0.06, label: '큰 당첨', multiplier: 5, color: uiTheme.colors.success },
-    { threshold: 0.22, label: '당첨', multiplier: 2, color: uiTheme.colors.economy },
-    { threshold: 0.42, label: '본전', multiplier: 1, color: uiTheme.colors.warning },
-  ];
-  const tier = tiers.find((entry) => roll < entry.threshold) || {
+  const tier = lotteryTiers.find((entry) => roll < entry.threshold) || {
     label: '꽝',
     multiplier: 0,
     color: uiTheme.colors.danger,
@@ -473,6 +491,15 @@ function drawLottery(wager) {
     payout,
     profit: payout - wager,
   };
+}
+
+function rollCasinoWin(chance) {
+  return Math.random() < chance;
+}
+
+function pickDifferentValue(values, excludedValue) {
+  const candidates = values.filter((value) => value !== excludedValue);
+  return candidates[randomInt(0, candidates.length - 1)];
 }
 
 function getRankingMetric(user, metric) {
@@ -525,7 +552,37 @@ function formatWaterGunDistance(cm) {
   return `${(cm / 100).toFixed(2)}m`;
 }
 
-function simulateWaterGunContest() {
+function buildWaterGunContestWithWinner(winnerKey) {
+  const winnerDistance = randomInt(1450, 1850);
+  const shots = waterGunContestants
+    .map((contestant, index) => {
+      const distance = contestant.key === winnerKey
+        ? winnerDistance
+        : randomInt(650, Math.max(651, winnerDistance - 1));
+      return {
+        ...contestant,
+        order: index + 1,
+        distance,
+      };
+    });
+  const results = shots.slice().sort((a, b) => b.distance - a.distance);
+
+  return {
+    shots,
+    results,
+    winner: results[0],
+  };
+}
+
+function simulateWaterGunContest(selectedKey = null) {
+  if (selectedKey) {
+    const selectedWins = rollCasinoWin(casinoWinChances.waterGun);
+    const winnerKey = selectedWins
+      ? selectedKey
+      : pickDifferentValue(waterGunContestants.map((contestant) => contestant.key), selectedKey);
+    return buildWaterGunContestWithWinner(winnerKey);
+  }
+
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const shots = waterGunContestants
       .map((contestant, index) => ({
@@ -2292,6 +2349,7 @@ function createWaterGunEmbed(stage, payload = {}) {
     }).addFields(
       { name: '참가자', value: waterGunContestants.map((contestant) => contestant.label).join(' / '), inline: true },
       { name: '지급 배율', value: '적중 시 3배', inline: true },
+      { name: '카지노 적중률', value: formatChance(casinoWinChances.waterGun), inline: true },
       { name: '진행', value: '초야부터 한 명씩 정액을 발사합니다.', inline: false },
     );
   }
@@ -3091,7 +3149,7 @@ function getBlackjackCardValue(card) {
   return Number(card.rank);
 }
 
-function getBlackjackHandValue(cards) {
+function getBlackjackHandDetails(cards) {
   let value = 0;
   let aces = 0;
 
@@ -3107,11 +3165,23 @@ function getBlackjackHandValue(cards) {
     aces -= 1;
   }
 
-  return value;
+  return {
+    value,
+    soft: aces > 0,
+  };
+}
+
+function getBlackjackHandValue(cards) {
+  return getBlackjackHandDetails(cards).value;
 }
 
 function isBlackjackHand(cards) {
   return cards.length === 2 && getBlackjackHandValue(cards) === 21;
+}
+
+function shouldDealerDrawBlackjack(cards) {
+  const details = getBlackjackHandDetails(cards);
+  return details.value < 17 || (details.value === 17 && details.soft);
 }
 
 function formatBlackjackCard(card) {
@@ -3235,7 +3305,7 @@ function settleBlackjackGame(guild, game, outcome, statusText, payout) {
 }
 
 function finishBlackjackStand(guild, game) {
-  while (getBlackjackHandValue(game.dealer) < 17) {
+  while (shouldDealerDrawBlackjack(game.dealer)) {
     game.dealer.push(drawBlackjackCard(game));
   }
 
@@ -3684,6 +3754,7 @@ async function handleLottery(interaction) {
     { name: '배율', value: `${result.lottery.multiplier}배`, inline: true },
     { name: '지급', value: formatCoins(result.lottery.payout), inline: true },
     { name: '손익', value: formatCoins(result.lottery.profit), inline: true },
+    { name: '카지노 확률', value: formatLotteryOdds(), inline: false },
     { name: '현재 잔액', value: formatCoins(result.balance), inline: false },
   );
 
@@ -5686,8 +5757,8 @@ async function handleCoinFlip(interaction) {
 
   const choice = interaction.options.getString('선택', true);
   const wager = interaction.options.getInteger('금액', true);
-  const resultFace = Math.random() < 0.5 ? 'heads' : 'tails';
-  const didWin = choice === resultFace;
+  const didWin = rollCasinoWin(casinoWinChances.coinFlip);
+  const resultFace = didWin ? choice : pickDifferentValue(['heads', 'tails'], choice);
   const result = await settleInstantGamble({
     guildId: interaction.guildId,
     discordUser: interaction.user,
@@ -5717,6 +5788,7 @@ async function handleCoinFlip(interaction) {
       { name: '내 선택', value: labels[choice], inline: true },
       { name: '결과', value: labels[resultFace], inline: true },
       { name: '지급', value: formatCoins(result.payout), inline: true },
+      { name: '카지노 적중률', value: formatChance(casinoWinChances.coinFlip), inline: true },
       { name: '현재 잔액', value: formatCoins(result.balance), inline: true },
     );
 
@@ -5733,8 +5805,8 @@ async function handleDice(interaction) {
 
   const choice = interaction.options.getInteger('숫자', true);
   const wager = interaction.options.getInteger('금액', true);
-  const roll = Math.floor(Math.random() * 6) + 1;
-  const didWin = choice === roll;
+  const didWin = rollCasinoWin(casinoWinChances.dice);
+  const roll = didWin ? choice : pickDifferentValue([1, 2, 3, 4, 5, 6], choice);
   const result = await settleInstantGamble({
     guildId: interaction.guildId,
     discordUser: interaction.user,
@@ -5760,6 +5832,7 @@ async function handleDice(interaction) {
       { name: '내 선택', value: String(choice), inline: true },
       { name: '결과', value: String(roll), inline: true },
       { name: '지급', value: formatCoins(result.payout), inline: true },
+      { name: '카지노 적중률', value: formatChance(casinoWinChances.dice), inline: true },
       { name: '현재 잔액', value: formatCoins(result.balance), inline: true },
     );
 
@@ -5786,7 +5859,7 @@ async function handleWaterGun(interaction) {
     return;
   }
 
-  const contest = simulateWaterGunContest();
+  const contest = simulateWaterGunContest(picked.key);
   const didWin = contest.winner.key === picked.key;
   const result = await settleInstantGamble({
     guildId: interaction.guildId,
